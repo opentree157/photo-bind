@@ -16,7 +16,7 @@ export type SubmissionStatus =
 
 export type StateCode = "MA" | "CT" | "RI" | "NH" | "NY" | "VT";
 
-export type QuoteTier = "Basic" | "Standard" | "Enhanced";
+export type QuoteTier = "Basic" | "Standard" | "Premium";
 
 export type RuleAction = "decline" | "refer";
 
@@ -286,7 +286,7 @@ export function buildQuote(submission: Submission): Quote {
   const tiers: Array<{ tier: QuoteTier; deductible: Risk["deductible"]; limit: Risk["limit"]; endorsements: string[] }> = [
     { tier: "Basic", deductible: 2500, limit: 1_000_000, endorsements: ["General liability", "Damage to rented premises"] },
     { tier: "Standard", deductible: 1000, limit: submission.risk.limit, endorsements: ["General liability", "Professional liability sublimit", "Hired equipment"] },
-    { tier: "Enhanced", deductible: 500, limit: 2_000_000, endorsements: ["General liability", "Additional insured blanket", "Worldwide shoots", "Hired equipment"] }
+    { tier: "Premium", deductible: 500, limit: 2_000_000, endorsements: ["General liability", "Additional insured blanket", "Worldwide shoots", "Hired equipment"] }
   ];
 
   return {

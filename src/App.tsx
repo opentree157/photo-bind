@@ -2,7 +2,7 @@ import {
   AlertTriangle,
   ArrowRight,
   BarChart3,
-  BriefcaseBusiness,
+  Camera,
   Check,
   ClipboardList,
   FileBadge,
@@ -20,9 +20,10 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { auditEvents, endorsements, policies, quotes, referrals, submissions, webhookEvents } from "./data";
-import { Submission, buildQuote, canTransition, dollars, evaluateEligibility, rateSubmission, underwritingRules } from "./domain";
+import { Role, Submission, buildQuote, canTransition, dollars, evaluateEligibility, rateSubmission, underwritingRules } from "./domain";
 
 type View = "dashboard" | "submission" | "quotes" | "underwriting" | "policy" | "admin" | "analytics";
+type Workspace = "frontoffice" | "backoffice";
 
 const navItems: Array<{ view: View; label: string; icon: typeof LayoutDashboard }> = [
   { view: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -34,13 +35,45 @@ const navItems: Array<{ view: View; label: string; icon: typeof LayoutDashboard 
   { view: "analytics", label: "Analytics", icon: BarChart3 }
 ];
 
+const roleCapabilities: Record<Role, string> = {
+  agent: "Create submissions, compare quotes, request bind.",
+  underwriter: "Review referrals, approve/decline, adjust terms.",
+  admin: "Configure rates, rules, appetite, and forms.",
+  applicant: "Use the public quote flow with internal actions hidden."
+};
+
 export function App() {
   const [view, setView] = useState<View>("dashboard");
+  const [role, setRole] = useState<Role>("agent");
+  const [workspace, setWorkspace] = useState<Workspace>("backoffice");
+  const [frontofficeSubmissions, setFrontofficeSubmissions] = useState<Submission[]>([]);
   const [selectedSubmissionId, setSelectedSubmissionId] = useState("SUB-1007");
   const [selectedQuoteOptionId, setSelectedQuoteOptionId] = useState("SUB-1007-OPT-2");
-  const selectedSubmission = submissions.find((submission) => submission.id === selectedSubmissionId) ?? submissions[0];
+  const allSubmissions = [...frontofficeSubmissions, ...submissions];
+  const selectedSubmission = allSubmissions.find((submission) => submission.id === selectedSubmissionId) ?? allSubmissions[0];
   const selectedQuote = useMemo(() => buildQuote(selectedSubmission), [selectedSubmission]);
   const selectedOption = selectedQuote.options.find((option) => option.id === selectedQuoteOptionId) ?? selectedQuote.options[1];
+
+  function upsertFrontofficeSubmission(submission: Submission) {
+    setFrontofficeSubmissions((current) => [submission, ...current.filter((item) => item.id !== submission.id)]);
+    setSelectedSubmissionId(submission.id);
+  }
+
+  function switchRole(nextRole: Role) {
+    setRole(nextRole);
+    setWorkspace(nextRole === "applicant" ? "frontoffice" : "backoffice");
+  }
+
+  if (workspace === "frontoffice") {
+    return (
+      <FrontofficePortal
+        onBackoffice={() => switchRole("agent")}
+        onRoleChange={switchRole}
+        onSubmissionChange={upsertFrontofficeSubmission}
+        role={role}
+      />
+    );
+  }
 
   return (
     <div className="appShell">
@@ -66,27 +99,37 @@ export function App() {
         </nav>
 
         <div className="rolePanel">
+          <span>Workspace</span>
+          <div className="workspaceSwitch">
+            <button className="active" type="button">Backoffice</button>
+            <button type="button" onClick={() => switchRole("applicant")}>Frontoffice</button>
+          </div>
           <span>Current role</span>
-          <strong>Agent</strong>
-          <small>Bind requests enabled. Referral approvals locked.</small>
+          <select aria-label="Current role" value={role} onChange={(event: { target: { value: Role } }) => switchRole(event.target.value)}>
+            <option value="agent">Agent</option>
+            <option value="underwriter">Underwriter</option>
+            <option value="admin">Admin/Product</option>
+          </select>
+          <small>{roleCapabilities[role]}</small>
         </div>
       </aside>
 
       <main>
-        <Topbar selectedSubmission={selectedSubmission} setSelectedSubmissionId={setSelectedSubmissionId} />
-        {view === "dashboard" && <Dashboard setView={setView} setSelectedSubmissionId={setSelectedSubmissionId} />}
-        {view === "submission" && <SubmissionWizard submission={selectedSubmission} />}
+        <Topbar selectedSubmission={selectedSubmission} setSelectedSubmissionId={setSelectedSubmissionId} submissions={allSubmissions} />
+        {view === "dashboard" && <Dashboard role={role} setView={setView} setSelectedSubmissionId={setSelectedSubmissionId} submissions={allSubmissions} />}
+        {view === "submission" && <SubmissionWizard role={role} submission={selectedSubmission} />}
         {view === "quotes" && (
           <QuoteCompare
+            role={role}
             selectedOptionId={selectedQuoteOptionId}
             setSelectedOptionId={setSelectedQuoteOptionId}
             quote={selectedQuote}
             submission={selectedSubmission}
           />
         )}
-        {view === "underwriting" && <UnderwritingQueue />}
+        {view === "underwriting" && <UnderwritingQueue role={role} />}
         {view === "policy" && <PolicyDetail />}
-        {view === "admin" && <AdminEditor />}
+        {view === "admin" && <AdminEditor role={role} />}
         {view === "analytics" && <Analytics />}
       </main>
 
@@ -121,12 +164,389 @@ export function App() {
   );
 }
 
+function FrontofficePortal({
+  onBackoffice,
+  onRoleChange,
+  onSubmissionChange,
+  role
+}: {
+  onBackoffice: () => void;
+  onRoleChange: (role: Role) => void;
+  onSubmissionChange: (submission: Submission) => void;
+  role: Role;
+}) {
+  type FrontStep = "questions" | "loading" | "quotes" | "bind";
+  const [form, setForm] = useState({
+    businessName: "North Shore Portrait Co.",
+    email: "elena@northshoreportraits.example",
+    state: "MA",
+    annualRevenue: "640000",
+    yearsInBusiness: "7",
+    priorClaimsCount: "0",
+    classCode: "PHOTO-PORTRAIT",
+    eventWorkPercent: "18",
+    usesDrones: false,
+    pyrotechnics: false,
+    effectiveDate: "2026-06-01",
+    signatureName: "",
+    paymentIntent: "card"
+  });
+  const [frontStep, setFrontStep] = useState<FrontStep>("questions");
+  const [selectedOptionId, setSelectedOptionId] = useState("PUBLIC-QUOTE-OPT-2");
+  const [bindRequested, setBindRequested] = useState(false);
+
+  const publicSubmission: Submission = {
+    id: "PUBLIC-QUOTE",
+    agency: "Direct",
+    producer: "Applicant portal",
+    status: "submitted",
+    business: {
+      name: form.businessName,
+      contact: form.businessName,
+      email: form.email,
+      state: form.state as Submission["business"]["state"],
+      city: "Applicant city",
+      annualRevenue: Number(form.annualRevenue) || 0,
+      payroll: Math.round((Number(form.annualRevenue) || 0) * 0.32),
+      yearsInBusiness: Number(form.yearsInBusiness) || 0,
+      priorClaimsCount: Number(form.priorClaimsCount) || 0
+    },
+    risk: {
+      classCode: form.classCode as Submission["risk"]["classCode"],
+      usesDrones: form.usesDrones,
+      pyrotechnics: form.pyrotechnics,
+      eventWorkPercent: Number(form.eventWorkPercent) || 0,
+      limit: 1_000_000,
+      deductible: 1000
+    },
+    effectiveDate: form.effectiveDate,
+    createdAt: "2026-05-06T17:30:00Z",
+    ruleVersion: "UW-2026.05-v3",
+    ratingVersion: "RT-2026.05.01"
+  };
+  const quote = buildQuote(publicSubmission);
+  const triggers = evaluateEligibility(publicSubmission);
+  const declineTriggers = triggers.filter((trigger) => trigger.action === "decline");
+  const referTriggers = triggers.filter((trigger) => trigger.action === "refer");
+  const selectedOption = quote.options.find((option) => option.id === selectedOptionId) ?? quote.options[1];
+  const quotedStatus: Submission["status"] = declineTriggers.length > 0 ? "ineligible" : referTriggers.length > 0 ? "referred" : "quoted";
+
+  function updateField(name: keyof typeof form, value: string | boolean) {
+    setForm((current) => ({ ...current, [name]: value }));
+    if (name !== "signatureName" && name !== "paymentIntent") {
+      setFrontStep("questions");
+      setBindRequested(false);
+    }
+  }
+
+  function submitQuote() {
+    onSubmissionChange({ ...publicSubmission, status: quotedStatus });
+    setFrontStep("loading");
+    setBindRequested(false);
+    window.setTimeout(() => setFrontStep("quotes"), 5000);
+  }
+
+  return (
+    <div className="frontofficeShell">
+      <header className="frontofficeTopbar">
+        <div className="frontofficeBrand">
+          <div className="brandMark">PB</div>
+          <div>
+            <strong>PhotoBind</strong>
+            <span>General liability for photographers</span>
+          </div>
+        </div>
+        <div className="frontofficeActions">
+          <select aria-label="Customer role" value={role} onChange={(event: { target: { value: Role } }) => onRoleChange(event.target.value)}>
+            <option value="applicant">Applicant</option>
+            <option value="agent">Agent</option>
+            <option value="underwriter">Underwriter</option>
+            <option value="admin">Admin/Product</option>
+          </select>
+          <button className="secondaryButton" type="button" onClick={onBackoffice}>Backoffice</button>
+        </div>
+      </header>
+
+      <main className="frontofficeMain">
+        <section className="frontHero">
+          <div className="frontHeroCopy">
+            <p>Customer quote flow</p>
+            <h1>Coverage for photographers who work on location, in studio, and at events</h1>
+            <span>Answer a few business questions, see your options, and request bind when you are ready.</span>
+          </div>
+          <div className="frontHeroPhoto" aria-label="Photographer preparing a client shoot">
+            <div className="frontQuoteSummary">
+              <Camera size={24} />
+              <span>{frontStep === "quotes" || frontStep === "bind" ? "Selected annual due" : "Quote not submitted"}</span>
+              <strong>{frontStep === "quotes" || frontStep === "bind" ? dollars(selectedOption.breakdown.totalDue) : "--"}</strong>
+              <small>{frontStep === "quotes" || frontStep === "bind" ? `${selectedOption.tier} / ${selectedOption.limit}` : "Complete the questions below"}</small>
+            </div>
+          </div>
+        </section>
+
+        <section className="frontProgress">
+          {[
+            ["questions", "Questions"],
+            ["quotes", "Quote results"],
+            ["bind", "Purchase and bind"]
+          ].map(([step, label], index) => (
+            <div className={frontStep === step || (frontStep === "loading" && step === "quotes") ? "active" : ""} key={step}>
+              <span>{index + 1}</span>
+              <strong>{label}</strong>
+            </div>
+          ))}
+        </section>
+
+        <section className="frontTrustStrip">
+          <div>
+            <strong>Fast appetite check</strong>
+            <span>State, claims, drones, and pyrotechnics are screened before quote.</span>
+          </div>
+          <div>
+            <strong>Bindable options</strong>
+            <span>Basic, Standard, and Premium packages use the same rating engine as backoffice.</span>
+          </div>
+          <div>
+            <strong>Clean handoff</strong>
+            <span>Purchase creates a bind request for issuance and policy documents.</span>
+          </div>
+        </section>
+
+        {frontStep === "questions" && (
+        <section className="frontQuoteLayout singlePageFlow">
+          <form
+            className="frontPanel quoteQuestionnaire"
+            onSubmit={(event: { preventDefault: () => void }) => {
+              event.preventDefault();
+              submitQuote();
+            }}
+          >
+            <div className="panelHeader">
+              <h2>Tell us about your business</h2>
+              <span>Step 1</span>
+            </div>
+            <div className="questionGrid">
+              <label className="questionField">
+                <span>What is your photography business called?</span>
+                <input value={form.businessName} onChange={(event: { target: { value: string } }) => updateField("businessName", event.target.value)} />
+              </label>
+              <label className="questionField">
+                <span>Where should we send quote updates?</span>
+                <input value={form.email} onChange={(event: { target: { value: string } }) => updateField("email", event.target.value)} />
+              </label>
+              <label className="questionField">
+                <span>What state is your business based in?</span>
+                <select value={form.state} onChange={(event: { target: { value: string } }) => updateField("state", event.target.value)}>
+                  {["MA", "CT", "RI", "NH", "NY", "VT"].map((state) => (
+                    <option key={state} value={state}>{state}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="questionField">
+                <span>About how much annual revenue do you expect?</span>
+                <div className="moneyInput">
+                  <span>$</span>
+                  <input inputMode="numeric" value={formatMoneyInput(form.annualRevenue)} onChange={(event: { target: { value: string } }) => updateField("annualRevenue", digitsOnly(event.target.value))} />
+                </div>
+              </label>
+              <label className="questionField">
+                <span>How many years have you been in business?</span>
+                <input min="0" type="number" value={form.yearsInBusiness} onChange={(event: { target: { value: string } }) => updateField("yearsInBusiness", event.target.value)} />
+              </label>
+              <label className="questionField">
+                <span>How many claims have you had in the last 3 years?</span>
+                <input min="0" type="number" value={form.priorClaimsCount} onChange={(event: { target: { value: string } }) => updateField("priorClaimsCount", event.target.value)} />
+              </label>
+              <label className="questionField">
+                <span>What kind of photography do you do most?</span>
+                <select value={form.classCode} onChange={(event: { target: { value: string } }) => updateField("classCode", event.target.value)}>
+                  <option value="PHOTO-PORTRAIT">Portrait</option>
+                  <option value="PHOTO-WEDDING">Wedding and events</option>
+                  <option value="PHOTO-STUDIO">Studio</option>
+                  <option value="PHOTO-DRONE">Drone photography</option>
+                </select>
+              </label>
+              <label className="questionField">
+                <span>How much of your work is at events?</span>
+                <select value={form.eventWorkPercent} onChange={(event: { target: { value: string } }) => updateField("eventWorkPercent", event.target.value)}>
+                  {["0", "25", "50", "75", "100"].map((percent) => (
+                    <option key={percent} value={percent}>{percent}%</option>
+                  ))}
+                </select>
+              </label>
+              <label className="questionField">
+                <span>When should coverage start?</span>
+                <input type="date" value={form.effectiveDate} onChange={(event: { target: { value: string } }) => updateField("effectiveDate", event.target.value)} />
+              </label>
+            </div>
+
+            <div className="riskToggleGrid">
+              <label>
+                <input checked={form.usesDrones} type="checkbox" onChange={(event: { target: { checked: boolean } }) => updateField("usesDrones", event.target.checked)} />
+                I use drones for paid shoots
+              </label>
+              <label>
+                <input checked={form.pyrotechnics} type="checkbox" onChange={(event: { target: { checked: boolean } }) => updateField("pyrotechnics", event.target.checked)} />
+                I work around pyrotechnics or flame effects
+              </label>
+            </div>
+
+            <button
+              className="primaryButton"
+              type="submit"
+            >
+              Submit and get quote
+              <ArrowRight size={18} />
+            </button>
+          </form>
+        </section>
+        )}
+
+        {frontStep === "loading" && (
+          <section className="frontLoadingPage">
+            <div className="loadingCard">
+              <div className="loadingLens">
+                <Camera size={30} />
+              </div>
+              <p>Building your quote</p>
+              <h2>Checking appetite, rating factors, and bind eligibility</h2>
+              <div className="loadingSteps">
+                <span>Verifying state availability</span>
+                <span>Reviewing claims and business exposures</span>
+                <span>Calculating Basic, Standard, and Premium options</span>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {frontStep === "quotes" && (
+          <section className="frontResultPage">
+          <div className="frontPanel quoteResultPanel resultHeroPanel">
+            <div className="panelHeader">
+              <h2>Your quote results</h2>
+              <span>Step 2</span>
+            </div>
+
+            {declineTriggers.length > 0 ? (
+              <div className="ruleList">
+                {declineTriggers.map((trigger) => (
+                  <div className="ruleItem decline" key={trigger.code}>
+                    <AlertTriangle size={18} />
+                    <span>
+                      <strong>{trigger.code}</strong>
+                      <small>{trigger.label}</small>
+                    </span>
+                    <b>decline</b>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <>
+                <div className="frontStatus">
+                  {referTriggers.length > 0 ? <AlertTriangle size={22} /> : <ShieldCheck size={22} />}
+                  <strong>{referTriggers.length > 0 ? "Quote available with underwriter review" : "Eligible for instant quote"}</strong>
+                  <span>
+                    {referTriggers.length > 0
+                      ? referTriggers.map((trigger) => trigger.code).join(", ")
+                      : "No referral or decline rules triggered."}
+                  </span>
+                </div>
+                <div className="frontQuoteOptions">
+                  {quote.options.map((option) => (
+                    <button
+                      className={selectedOption.id === option.id ? "selected" : ""}
+                      key={option.id}
+                      type="button"
+                      onClick={() => setSelectedOptionId(option.id)}
+                    >
+                      <span>{option.tier}</span>
+                      <strong>{dollars(option.breakdown.totalDue)}</strong>
+                      <small>{option.limit} / {dollars(option.deductible)} deductible</small>
+                    </button>
+                  ))}
+                </div>
+                <div className="frontPageActions">
+                  <button className="secondaryButton" type="button" onClick={() => setFrontStep("questions")}>Edit answers</button>
+                  <button className="primaryButton" type="button" onClick={() => setFrontStep("bind")}>
+                    Continue to purchase
+                    <ArrowRight size={18} />
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+          </section>
+        )}
+
+        {frontStep === "bind" && (
+          <section className="frontResultPage">
+          <div className="frontPanel bindPanel">
+            <div className="panelHeader">
+              <h2>Purchase and bind</h2>
+              <span>Step 3</span>
+            </div>
+            {declineTriggers.length > 0 ? (
+              <div className="frontStatus muted">
+                <LockKeyhole size={22} />
+                <strong>Bind unavailable</strong>
+                <span>Submit an eligible quote before purchase.</span>
+              </div>
+            ) : bindRequested ? (
+              <div className="frontStatus">
+                <ShieldCheck size={22} />
+                <strong>Bind request received</strong>
+                <span>Policy issuance and declaration documents are queued for the backoffice.</span>
+              </div>
+            ) : (
+              <>
+                <div className="bindSummary">
+                  <span>Selected option</span>
+                  <strong>{selectedOption.tier} / {dollars(selectedOption.breakdown.totalDue)}</strong>
+                  <small>{publicSubmission.effectiveDate} effective date</small>
+                </div>
+                <label className="questionField">
+                  <span>Signature name</span>
+                  <input value={form.signatureName} onChange={(event: { target: { value: string } }) => updateField("signatureName", event.target.value)} />
+                </label>
+                <label className="questionField">
+                  <span>Payment intent</span>
+                  <select value={form.paymentIntent} onChange={(event: { target: { value: string } }) => updateField("paymentIntent", event.target.value)}>
+                    <option value="card">Card ending later</option>
+                    <option value="ach">ACH authorization</option>
+                    <option value="invoice">Invoice me</option>
+                  </select>
+                </label>
+                <button
+                  className="primaryButton"
+                  disabled={form.signatureName.trim().length === 0}
+                  type="button"
+                  onClick={() => {
+                    onSubmissionChange({ ...publicSubmission, selectedQuoteOptionId: selectedOption.id, status: "bind_requested" });
+                    setBindRequested(true);
+                  }}
+                >
+                  Purchase and request bind
+                  <LockKeyhole size={18} />
+                </button>
+                <button className="secondaryButton" type="button" onClick={() => setFrontStep("quotes")}>Back to quote options</button>
+              </>
+            )}
+          </div>
+          </section>
+        )}
+      </main>
+    </div>
+  );
+}
+
 function Topbar({
   selectedSubmission,
-  setSelectedSubmissionId
+  setSelectedSubmissionId,
+  submissions
 }: {
   selectedSubmission: Submission;
   setSelectedSubmissionId: (id: string) => void;
+  submissions: Submission[];
 }) {
   return (
     <header className="topbar">
@@ -149,39 +569,43 @@ function Topbar({
 }
 
 function Dashboard({
+  role,
   setView,
-  setSelectedSubmissionId
+  setSelectedSubmissionId,
+  submissions
 }: {
+  role: Role;
   setView: (view: View) => void;
   setSelectedSubmissionId: (id: string) => void;
+  submissions: Submission[];
 }) {
-  const funnel = [
-    { label: "Draft", value: 18 },
-    { label: "Submitted", value: 42 },
-    { label: "Quoted", value: 31 },
-    { label: "Referred", value: 9 },
-    { label: "Bound", value: 12 },
-    { label: "Issued", value: 10 }
-  ];
+  const funnel = ["draft", "submitted", "quoted", "referred", "bound", "issued"].map((status) => ({
+    label: labelize(status),
+    value: submissions.filter((submission) => submission.status === status).length
+  }));
+  const openCount = submissions.filter((submission) => !["issued", "cancelled", "declined", "ineligible"].includes(submission.status)).length;
+  const referralRate = Math.round((submissions.filter((submission) => submission.status === "referred").length / submissions.length) * 100);
+  const quoteToBind = Math.round((policies.length / quotes.length) * 100);
+  const averagePremium = Math.round(submissions.reduce((sum, submission) => sum + rateSubmission(submission).totalDue, 0) / submissions.length);
 
   return (
     <div className="content">
       <section className="pageHeader">
         <div>
-          <p>Agent workspace</p>
+          <p>{labelize(role)} workspace</p>
           <h2>Submission intake, quoting, bind, and issuance</h2>
         </div>
-        <button className="primaryButton" onClick={() => setView("submission")}>
+        <button className="primaryButton" disabled={role === "underwriter"} onClick={() => setView("submission")}>
           <ClipboardList size={18} />
           New submission
         </button>
       </section>
 
       <section className="metricGrid">
-        <Metric label="Open submissions" value="74" trend="+12%" />
-        <Metric label="Referral rate" value="21%" trend="-4%" />
-        <Metric label="Quote-to-bind" value="38%" trend="+7%" />
-        <Metric label="Avg premium" value="$1,184" trend="+3%" />
+        <Metric label="Open submissions" value={`${openCount}`} trend="Current book" />
+        <Metric label="Referral rate" value={`${referralRate}%`} trend="Current book" />
+        <Metric label="Quote-to-bind" value={`${quoteToBind}%`} trend="Current book" />
+        <Metric label="Avg premium" value={dollars(averagePremium)} trend="Current book" />
       </section>
 
       <section className="split">
@@ -233,7 +657,7 @@ function Dashboard({
   );
 }
 
-function SubmissionWizard({ submission }: { submission: Submission }) {
+function SubmissionWizard({ role, submission }: { role: Role; submission: Submission }) {
   const triggers = evaluateEligibility(submission);
   const quote = buildQuote(submission);
 
@@ -244,7 +668,7 @@ function SubmissionWizard({ submission }: { submission: Submission }) {
           <p>New submission wizard</p>
           <h2>{submission.business.name}</h2>
         </div>
-        <button className="secondaryButton">
+        <button className="secondaryButton" disabled={role === "underwriter" || role === "admin"}>
           Submit risk
           <ArrowRight size={18} />
         </button>
@@ -324,11 +748,13 @@ function SubmissionWizard({ submission }: { submission: Submission }) {
 }
 
 function QuoteCompare({
+  role,
   submission,
   quote,
   selectedOptionId,
   setSelectedOptionId
 }: {
+  role: Role;
   submission: Submission;
   quote: ReturnType<typeof buildQuote>;
   selectedOptionId: string;
@@ -341,7 +767,7 @@ function QuoteCompare({
           <p>Quote comparison</p>
           <h2>{submission.business.name}</h2>
         </div>
-        <button className="primaryButton">
+        <button className="primaryButton" disabled={role === "underwriter" || role === "admin" || role === "applicant"}>
           <LockKeyhole size={18} />
           Request bind
         </button>
@@ -387,7 +813,7 @@ function QuoteCompare({
   );
 }
 
-function UnderwritingQueue() {
+function UnderwritingQueue({ role }: { role: Role }) {
   return (
     <div className="content">
       <section className="pageHeader">
@@ -425,8 +851,8 @@ function UnderwritingQueue() {
               </div>
               <textarea defaultValue={referral.notes.join("\n")} aria-label="Underwriting notes" />
               <div className="buttonRow">
-                <button className="secondaryButton">Decline</button>
-                <button className="primaryButton">Approve with terms</button>
+                <button className="secondaryButton" disabled={role !== "underwriter"}>Decline</button>
+                <button className="primaryButton" disabled={role !== "underwriter"}>Approve with terms</button>
               </div>
             </div>
           );
@@ -504,7 +930,7 @@ function PolicyDetail() {
   );
 }
 
-function AdminEditor() {
+function AdminEditor({ role }: { role: Role }) {
   const factors = [
     ["MA", "PHOTO-PORTRAIT", "1.12", "1.00", "active"],
     ["CT", "PHOTO-DRONE", "1.06", "1.35", "review"],
@@ -519,7 +945,7 @@ function AdminEditor() {
           <p>Admin/Product manager</p>
           <h2>Rating tables, forms, appetite, and rule versions</h2>
         </div>
-        <button className="primaryButton">
+        <button className="primaryButton" disabled={role !== "admin"}>
           <Settings size={18} />
           Publish version
         </button>
@@ -663,4 +1089,13 @@ function StatusPill({ status }: { status: Submission["status"] }) {
 
 function labelize(value: string) {
   return value.replace(/([A-Z])/g, " $1").replaceAll("_", " ").replace(/^\w/, (char) => char.toUpperCase());
+}
+
+function digitsOnly(value: string) {
+  return value.replace(/\D/g, "");
+}
+
+function formatMoneyInput(value: string) {
+  const numericValue = Number(digitsOnly(value));
+  return numericValue ? numericValue.toLocaleString("en-US") : "";
 }
