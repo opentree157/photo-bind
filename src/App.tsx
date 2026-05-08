@@ -18,9 +18,10 @@ import {
   UserCheck,
   Webhook
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { auditEvents, endorsements, policies, quotes, referrals, submissions, webhookEvents } from "./data";
-import { Role, Submission, buildQuote, canTransition, dollars, evaluateEligibility, rateSubmission, underwritingRules } from "./domain";
+import { Policy, Role, Submission, buildQuote, canTransition, dollars, evaluateEligibility, rateSubmission, underwritingRules } from "./domain";
+import { DocumentRecord, PlatformState, apiEndpoints, bindSubmission, quoteSubmission, upsertSubmission } from "./platform";
 
 type View = "dashboard" | "submission" | "quotes" | "underwriting" | "policy" | "admin" | "analytics";
 type Workspace = "frontoffice" | "backoffice";
@@ -42,21 +43,72 @@ const roleCapabilities: Record<Role, string> = {
   applicant: "Use the public quote flow with internal actions hidden."
 };
 
+const storageKey = "photobind.platformState.v1";
+
+function initialPlatformState(): PlatformState {
+  const seededDocuments = policies.map((policy) => ({
+    id: `DOC-DEC-${policy.policyNumber}`,
+    policyId: policy.id,
+    name: "Declaration page PDF",
+    status: "generated" as const,
+    generatedAt: policy.snapshot.issuedAt,
+    html: `<h1>${policy.policyNumber}</h1><p>${policy.insured}</p>`
+  }));
+
+  return {
+    submissions,
+    policies,
+    auditEvents,
+    webhookEvents,
+    documents: seededDocuments,
+    idempotencyLedger: {}
+  };
+}
+
+function loadPlatformState() {
+  try {
+    const stored = window.localStorage.getItem(storageKey);
+    if (!stored) return initialPlatformState();
+    const parsed = JSON.parse(stored) as Partial<PlatformState>;
+    const seed = initialPlatformState();
+    return {
+      submissions: parsed.submissions ?? seed.submissions,
+      policies: parsed.policies ?? seed.policies,
+      auditEvents: parsed.auditEvents ?? seed.auditEvents,
+      webhookEvents: parsed.webhookEvents ?? seed.webhookEvents,
+      documents: parsed.documents ?? seed.documents,
+      idempotencyLedger: parsed.idempotencyLedger ?? {}
+    };
+  } catch {
+    return initialPlatformState();
+  }
+}
+
 export function App() {
   const [view, setView] = useState<View>("dashboard");
   const [role, setRole] = useState<Role>("agent");
   const [workspace, setWorkspace] = useState<Workspace>("backoffice");
-  const [frontofficeSubmissions, setFrontofficeSubmissions] = useState<Submission[]>([]);
+  const [platformState, setPlatformState] = useState<PlatformState>(loadPlatformState());
   const [selectedSubmissionId, setSelectedSubmissionId] = useState("SUB-1007");
   const [selectedQuoteOptionId, setSelectedQuoteOptionId] = useState("SUB-1007-OPT-2");
-  const allSubmissions = [...frontofficeSubmissions, ...submissions];
+  const allSubmissions = platformState.submissions;
   const selectedSubmission = allSubmissions.find((submission) => submission.id === selectedSubmissionId) ?? allSubmissions[0];
   const selectedQuote = useMemo(() => buildQuote(selectedSubmission), [selectedSubmission]);
   const selectedOption = selectedQuote.options.find((option) => option.id === selectedQuoteOptionId) ?? selectedQuote.options[1];
 
-  function upsertFrontofficeSubmission(submission: Submission) {
-    setFrontofficeSubmissions((current) => [submission, ...current.filter((item) => item.id !== submission.id)]);
+  useEffect(() => {
+    window.localStorage.setItem(storageKey, JSON.stringify(platformState));
+  }, [platformState]);
+
+  function upsertApplicantSubmission(submission: Submission) {
+    setPlatformState((current) => upsertSubmission(current, submission, "Applicant"));
     setSelectedSubmissionId(submission.id);
+  }
+
+  function requestBind(submissionId: string, optionId: string, actor: string) {
+    const idempotencyKey = `bind:${submissionId}:${optionId}`;
+    setPlatformState((current) => bindSubmission(current, submissionId, optionId, actor, idempotencyKey));
+    setSelectedSubmissionId(submissionId);
   }
 
   function switchRole(nextRole: Role) {
@@ -69,7 +121,8 @@ export function App() {
       <FrontofficePortal
         onBackoffice={() => switchRole("agent")}
         onRoleChange={switchRole}
-        onSubmissionChange={upsertFrontofficeSubmission}
+        onBindRequest={(submissionId, optionId) => requestBind(submissionId, optionId, "Applicant")}
+        onSubmissionChange={upsertApplicantSubmission}
         role={role}
       />
     );
@@ -101,7 +154,7 @@ export function App() {
         <div className="rolePanel">
           <span>Workspace</span>
           <div className="workspaceSwitch">
-            <button className="active" type="button">Backoffice</button>
+            <button className="active" type="button" onClick={() => setWorkspace("backoffice")}>Backoffice</button>
             <button type="button" onClick={() => switchRole("applicant")}>Frontoffice</button>
           </div>
           <span>Current role</span>
@@ -120,6 +173,7 @@ export function App() {
         {view === "submission" && <SubmissionWizard role={role} submission={selectedSubmission} />}
         {view === "quotes" && (
           <QuoteCompare
+            onBindRequest={(optionId) => requestBind(selectedSubmission.id, optionId, labelize(role))}
             role={role}
             selectedOptionId={selectedQuoteOptionId}
             setSelectedOptionId={setSelectedQuoteOptionId}
@@ -128,8 +182,8 @@ export function App() {
           />
         )}
         {view === "underwriting" && <UnderwritingQueue role={role} />}
-        {view === "policy" && <PolicyDetail />}
-        {view === "admin" && <AdminEditor role={role} />}
+        {view === "policy" && <PolicyDetail documents={platformState.documents} policies={platformState.policies} />}
+        {view === "admin" && <AdminEditor auditEvents={platformState.auditEvents} role={role} webhookEvents={platformState.webhookEvents} />}
         {view === "analytics" && <Analytics />}
       </main>
 
@@ -151,7 +205,7 @@ export function App() {
         <section className="railSection">
           <h2>Audit Stream</h2>
           <div className="auditList">
-            {auditEvents.slice(0, 4).map((event) => (
+            {platformState.auditEvents.slice(0, 4).map((event) => (
               <div className="auditItem" key={event.id}>
                 <span>{event.action}</span>
                 <p>{event.detail}</p>
@@ -165,11 +219,13 @@ export function App() {
 }
 
 function FrontofficePortal({
+  onBindRequest,
   onBackoffice,
   onRoleChange,
   onSubmissionChange,
   role
 }: {
+  onBindRequest: (submissionId: string, optionId: string) => void;
   onBackoffice: () => void;
   onRoleChange: (role: Role) => void;
   onSubmissionChange: (submission: Submission) => void;
@@ -240,7 +296,7 @@ function FrontofficePortal({
   }
 
   function submitQuote() {
-    onSubmissionChange({ ...publicSubmission, status: quotedStatus });
+    onSubmissionChange(quoteSubmission({ ...publicSubmission, status: "draft" }));
     setFrontStep("loading");
     setBindRequested(false);
     window.setTimeout(() => setFrontStep("quotes"), 5000);
@@ -521,7 +577,8 @@ function FrontofficePortal({
                   disabled={form.signatureName.trim().length === 0}
                   type="button"
                   onClick={() => {
-                    onSubmissionChange({ ...publicSubmission, selectedQuoteOptionId: selectedOption.id, status: "bind_requested" });
+                    onSubmissionChange({ ...publicSubmission, status: quotedStatus, selectedQuoteOptionId: selectedOption.id });
+                    onBindRequest(publicSubmission.id, selectedOption.id);
                     setBindRequested(true);
                   }}
                 >
@@ -660,6 +717,7 @@ function Dashboard({
 function SubmissionWizard({ role, submission }: { role: Role; submission: Submission }) {
   const triggers = evaluateEligibility(submission);
   const quote = buildQuote(submission);
+  const [submitted, setSubmitted] = useState(false);
 
   return (
     <div className="content">
@@ -668,11 +726,18 @@ function SubmissionWizard({ role, submission }: { role: Role; submission: Submis
           <p>New submission wizard</p>
           <h2>{submission.business.name}</h2>
         </div>
-        <button className="secondaryButton" disabled={role === "underwriter" || role === "admin"}>
-          Submit risk
-          <ArrowRight size={18} />
+        <button className="secondaryButton" disabled={role === "underwriter" || role === "admin"} onClick={() => setSubmitted(true)}>
+          {submitted ? <Check size={18} /> : <ArrowRight size={18} />}
+          {submitted ? "Submitted" : "Submit risk"}
         </button>
       </section>
+
+      {submitted && (
+        <div className="actionNotice">
+          <ShieldCheck size={18} />
+          Submission moved through eligibility and quote preview using {submission.ruleVersion}.
+        </div>
+      )}
 
       <section className="wizard">
         <div className="wizardSteps">
@@ -748,18 +813,23 @@ function SubmissionWizard({ role, submission }: { role: Role; submission: Submis
 }
 
 function QuoteCompare({
+  onBindRequest,
   role,
   submission,
   quote,
   selectedOptionId,
   setSelectedOptionId
 }: {
+  onBindRequest: (optionId: string) => void;
   role: Role;
   submission: Submission;
   quote: ReturnType<typeof buildQuote>;
   selectedOptionId: string;
   setSelectedOptionId: (id: string) => void;
 }) {
+  const [bindRequested, setBindRequested] = useState(false);
+  const selectedOption = quote.options.find((option) => option.id === selectedOptionId) ?? quote.options[0];
+
   return (
     <div className="content">
       <section className="pageHeader">
@@ -767,11 +837,25 @@ function QuoteCompare({
           <p>Quote comparison</p>
           <h2>{submission.business.name}</h2>
         </div>
-        <button className="primaryButton" disabled={role === "underwriter" || role === "admin" || role === "applicant"}>
+        <button
+          className="primaryButton"
+          disabled={role === "underwriter" || role === "admin" || role === "applicant"}
+          onClick={() => {
+            onBindRequest(selectedOption.id);
+            setBindRequested(true);
+          }}
+        >
           <LockKeyhole size={18} />
-          Request bind
+          {bindRequested ? "Bind requested" : "Request bind"}
         </button>
       </section>
+
+      {bindRequested && (
+        <div className="actionNotice">
+          <LockKeyhole size={18} />
+          Bind request queued for {selectedOption.tier} at {dollars(selectedOption.breakdown.totalDue)}.
+        </div>
+      )}
 
       <section className="quoteGrid">
         {quote.options.map((option) => (
@@ -814,6 +898,9 @@ function QuoteCompare({
 }
 
 function UnderwritingQueue({ role }: { role: Role }) {
+  const [showAuthorityMatrix, setShowAuthorityMatrix] = useState(false);
+  const [decisions, setDecisions] = useState<Record<string, "approved" | "declined">>({});
+
   return (
     <div className="content">
       <section className="pageHeader">
@@ -821,11 +908,28 @@ function UnderwritingQueue({ role }: { role: Role }) {
           <p>Underwriter queue</p>
           <h2>Referrals awaiting review</h2>
         </div>
-        <button className="secondaryButton">
+        <button className="secondaryButton" onClick={() => setShowAuthorityMatrix((visible) => !visible)}>
           <GitBranch size={18} />
-          Authority matrix
+          {showAuthorityMatrix ? "Hide matrix" : "Authority matrix"}
         </button>
       </section>
+
+      {showAuthorityMatrix && (
+        <section className="panel authorityMatrix">
+          <div>
+            <strong>Automatic quote authority</strong>
+            <span>Supported states, revenue under $2M, fewer than 2 claims, no drone referral, no prohibited pyrotechnics.</span>
+          </div>
+          <div>
+            <strong>Underwriter approval</strong>
+            <span>Drones, 2+ claims, or revenue above auto authority can be approved with notes and terms.</span>
+          </div>
+          <div>
+            <strong>Mandatory decline</strong>
+            <span>Unsupported state or pyrotechnics exposure cannot be overridden by agents.</span>
+          </div>
+        </section>
+      )}
 
       <section className="queue">
         {referrals.map((referral) => {
@@ -851,8 +955,16 @@ function UnderwritingQueue({ role }: { role: Role }) {
               </div>
               <textarea defaultValue={referral.notes.join("\n")} aria-label="Underwriting notes" />
               <div className="buttonRow">
-                <button className="secondaryButton" disabled={role !== "underwriter"}>Decline</button>
-                <button className="primaryButton" disabled={role !== "underwriter"}>Approve with terms</button>
+                {decisions[referral.id] ? (
+                  <div className={`decisionBadge ${decisions[referral.id]}`}>
+                    {labelize(decisions[referral.id])}
+                  </div>
+                ) : (
+                  <>
+                    <button className="secondaryButton" disabled={role !== "underwriter"} onClick={() => setDecisions((current) => ({ ...current, [referral.id]: "declined" }))}>Decline</button>
+                    <button className="primaryButton" disabled={role !== "underwriter"} onClick={() => setDecisions((current) => ({ ...current, [referral.id]: "approved" }))}>Approve with terms</button>
+                  </>
+                )}
               </div>
             </div>
           );
@@ -862,8 +974,12 @@ function UnderwritingQueue({ role }: { role: Role }) {
   );
 }
 
-function PolicyDetail() {
+function PolicyDetail({ documents, policies }: { documents: DocumentRecord[]; policies: Policy[] }) {
   const policy = policies[0];
+  const [selectedDocument, setSelectedDocument] = useState<string | null>(null);
+  const quoteOption = policy.snapshot.quoteOption;
+  const insuredState = policy.snapshot.submission.business.state;
+  const isDeclaration = selectedDocument === "Declaration page";
 
   return (
     <div className="content">
@@ -872,7 +988,7 @@ function PolicyDetail() {
           <p>Policy detail</p>
           <h2>{policy.policyNumber}</h2>
         </div>
-        <button className="primaryButton">
+        <button className="primaryButton" onClick={() => setSelectedDocument("Declaration page")}>
           <FileText size={18} />
           Declaration PDF
         </button>
@@ -904,11 +1020,11 @@ function PolicyDetail() {
             <span>Async jobs</span>
           </div>
           {["Declaration page", "Policy jacket", "Additional insured schedule"].map((document) => (
-            <div className="documentRow" key={document}>
+            <button className="documentRow" key={document} onClick={() => setSelectedDocument(document)}>
               <FileText size={18} />
               <span>{document}</span>
-              <b>Generated</b>
-            </div>
+              <b>{documents.some((item) => item.policyId === policy.id) ? "Generated" : "Queued"}</b>
+            </button>
           ))}
         </div>
 
@@ -926,11 +1042,115 @@ function PolicyDetail() {
           ))}
         </div>
       </section>
+
+      {selectedDocument && (
+        <div className="modalBackdrop" role="dialog" aria-modal="true" aria-label={`${selectedDocument} preview`}>
+          <div className="declarationModal">
+            <div className="modalHeader">
+              <div>
+                <p>{selectedDocument}</p>
+                <h2>{isDeclaration ? policy.policyNumber : policy.insured}</h2>
+              </div>
+              <button className="secondaryButton" onClick={() => setSelectedDocument(null)}>Close</button>
+            </div>
+
+            <section className="declarationSheet">
+              <div className="declarationTitle">
+                <div className="brandMark">PB</div>
+                <div>
+                  <strong>PhotoBind Commercial General Liability</strong>
+                  <span>{isDeclaration ? "Declarations / Evidence of insurance" : "Generated policy document preview"}</span>
+                </div>
+              </div>
+
+              {isDeclaration ? (
+                <>
+              <div className="declarationGrid">
+                <div>
+                  <span>Named insured</span>
+                  <strong>{policy.insured}</strong>
+                </div>
+                <div>
+                  <span>Policy number</span>
+                  <strong>{policy.policyNumber}</strong>
+                </div>
+                <div>
+                  <span>Policy period</span>
+                  <strong>{policy.effectiveDate} to {policy.expirationDate}</strong>
+                </div>
+                <div>
+                  <span>Rating state</span>
+                  <strong>{insuredState}</strong>
+                </div>
+                <div>
+                  <span>Coverage package</span>
+                  <strong>{quoteOption.tier}</strong>
+                </div>
+                <div>
+                  <span>Occurrence limit</span>
+                  <strong>{quoteOption.limit}</strong>
+                </div>
+                <div>
+                  <span>Deductible</span>
+                  <strong>{dollars(quoteOption.deductible)}</strong>
+                </div>
+                <div>
+                  <span>Total due</span>
+                  <strong>{dollars(policy.premium)}</strong>
+                </div>
+              </div>
+
+              <div className="declarationSection">
+                <h3>Included coverages</h3>
+                {quoteOption.endorsements.map((endorsement) => (
+                  <p key={endorsement}>
+                    <Check size={16} />
+                    {endorsement}
+                  </p>
+                ))}
+              </div>
+
+              <div className="declarationSection">
+                <h3>Rating snapshot</h3>
+                <p>Rated using {policy.snapshot.ratingVersion} and underwriting rules {policy.snapshot.ruleVersion}.</p>
+                <p>Issued at {new Date(policy.snapshot.issuedAt).toLocaleString("en-US")} from immutable bind snapshot.</p>
+              </div>
+                </>
+              ) : (
+                <div className="declarationSection documentPreview">
+                  <h3>{selectedDocument}</h3>
+                  <p>
+                    <Check size={16} />
+                    Generated for {policy.insured} under policy {policy.policyNumber}.
+                  </p>
+                  <p>
+                    <Check size={16} />
+                    Term: {policy.effectiveDate} to {policy.expirationDate}.
+                  </p>
+                  <p>
+                    <Check size={16} />
+                    Stored against the immutable policy snapshot for audit review.
+                  </p>
+                </div>
+              )}
+            </section>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function AdminEditor({ role }: { role: Role }) {
+function AdminEditor({
+  auditEvents,
+  role,
+  webhookEvents
+}: {
+  auditEvents: { action: string; detail: string; id: string }[];
+  role: Role;
+  webhookEvents: { id: string; payload: string; status: string; type: string }[];
+}) {
+  const [published, setPublished] = useState(false);
   const factors = [
     ["MA", "PHOTO-PORTRAIT", "1.12", "1.00", "active"],
     ["CT", "PHOTO-DRONE", "1.06", "1.35", "review"],
@@ -945,11 +1165,18 @@ function AdminEditor({ role }: { role: Role }) {
           <p>Admin/Product manager</p>
           <h2>Rating tables, forms, appetite, and rule versions</h2>
         </div>
-        <button className="primaryButton" disabled={role !== "admin"}>
+        <button className="primaryButton" disabled={role !== "admin"} onClick={() => setPublished(true)}>
           <Settings size={18} />
-          Publish version
+          {published ? "Published" : "Publish version"}
         </button>
       </section>
+
+      {published && (
+        <div className="actionNotice">
+          <Settings size={18} />
+          Rating table RT-2026.05.01 and underwriting rules UW-2026.05-v3 are published for new quotes.
+        </div>
+      )}
 
       <section className="split">
         <div className="panel">
@@ -1002,6 +1229,33 @@ function AdminEditor({ role }: { role: Role }) {
                 <small>{event.payload}</small>
               </span>
               <b>{event.status}</b>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panelHeader">
+          <h3>API Surface</h3>
+          <span>{apiEndpoints.length} endpoints</span>
+        </div>
+        <div className="apiGrid">
+          {apiEndpoints.map((endpoint) => (
+            <code key={endpoint}>{endpoint}</code>
+          ))}
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panelHeader">
+          <h3>Persisted Audit Events</h3>
+          <span>{auditEvents.length} events</span>
+        </div>
+        <div className="auditEventTable">
+          {auditEvents.slice(0, 6).map((event) => (
+            <div key={event.id}>
+              <strong>{event.action}</strong>
+              <span>{event.detail}</span>
             </div>
           ))}
         </div>

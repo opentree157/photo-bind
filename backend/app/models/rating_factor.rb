@@ -1,0 +1,2 @@
+class RatingFactor < ApplicationRecord
+end

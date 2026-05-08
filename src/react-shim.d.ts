@@ -7,6 +7,7 @@ declare namespace JSX {
 declare module "react" {
   export type Dispatch<A> = (value: A) => void;
   export type SetStateAction<S> = S | ((previousState: S) => S);
+  export function useEffect(effect: () => void | (() => void), deps?: unknown[]): void;
   export function useMemo<T>(factory: () => T, deps: unknown[]): T;
   export function useState<S>(initialState: S): [S, Dispatch<SetStateAction<S>>];
   const React: {

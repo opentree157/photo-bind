@@ -1,0 +1,2 @@
+class UnderwritingRule < ApplicationRecord
+end

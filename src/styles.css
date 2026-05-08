@@ -784,6 +784,19 @@ main {
   background: #ffffff;
 }
 
+.actionNotice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 46px;
+  padding: 12px 14px;
+  border: 1px solid #b9d7ca;
+  border-radius: 8px;
+  background: #eaf6ef;
+  color: #245a4d;
+  font-weight: 800;
+}
+
 .metric {
   display: grid;
   gap: 8px;
@@ -995,6 +1008,32 @@ main {
   gap: 10px;
 }
 
+.apiGrid,
+.auditEventTable {
+  display: grid;
+  gap: 8px;
+}
+
+.apiGrid code {
+  display: block;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #f3f7f4;
+  color: #1b3d35;
+  white-space: normal;
+}
+
+.auditEventTable div {
+  display: grid;
+  gap: 3px;
+  padding: 10px 0;
+  border-bottom: 1px solid #edf2ee;
+}
+
+.auditEventTable span {
+  color: #5e6e69;
+}
+
 .quoteMini > div {
   display: flex;
   justify-content: space-between;
@@ -1073,6 +1112,43 @@ main {
   align-items: stretch;
 }
 
+.authorityMatrix {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.authorityMatrix div {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border-radius: 8px;
+  background: #f3f7f4;
+}
+
+.authorityMatrix span {
+  color: #5e6e69;
+  line-height: 1.35;
+}
+
+.decisionBadge {
+  display: grid;
+  place-items: center;
+  min-height: 42px;
+  border-radius: 8px;
+  font-weight: 900;
+}
+
+.decisionBadge.approved {
+  background: #e7f5ee;
+  color: #1e6b53;
+}
+
+.decisionBadge.declined {
+  background: #fae9e7;
+  color: #8e2f25;
+}
+
 .policyHero {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1098,6 +1174,139 @@ main {
   min-height: 48px;
   padding: 10px 0;
   border-bottom: 1px solid #edf2ee;
+}
+
+button.documentRow {
+  width: 100%;
+  border-top: 0;
+  border-right: 0;
+  border-left: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+button.documentRow:hover {
+  color: #1e6b53;
+}
+
+.modalBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: rgba(16, 35, 31, 0.66);
+}
+
+.declarationModal {
+  width: min(920px, 100%);
+  max-height: min(860px, 92vh);
+  overflow: auto;
+  border-radius: 8px;
+  background: #f5f7f4;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.32);
+}
+
+.modalHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+  border-bottom: 1px solid #d9e3dd;
+  background: #ffffff;
+  position: sticky;
+  top: 0;
+}
+
+.modalHeader p,
+.modalHeader h2,
+.declarationSection h3 {
+  margin: 0;
+}
+
+.modalHeader p {
+  color: #49625b;
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.declarationSheet {
+  display: grid;
+  gap: 18px;
+  margin: 22px;
+  padding: 28px;
+  border: 1px solid #d9e3dd;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.declarationTitle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 18px;
+  border-bottom: 2px solid #10231f;
+}
+
+.declarationTitle > div:last-child {
+  display: grid;
+  gap: 3px;
+}
+
+.declarationTitle strong {
+  font-size: 22px;
+}
+
+.declarationTitle span,
+.declarationGrid span,
+.declarationSection p {
+  color: #5e6e69;
+}
+
+.declarationGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border: 1px solid #d9e3dd;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.declarationGrid div {
+  display: grid;
+  gap: 5px;
+  min-height: 76px;
+  padding: 13px;
+  border-right: 1px solid #d9e3dd;
+  border-bottom: 1px solid #d9e3dd;
+}
+
+.declarationGrid div:nth-child(2n) {
+  border-right: 0;
+}
+
+.declarationGrid div:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+.declarationSection {
+  display: grid;
+  gap: 8px;
+}
+
+.declarationSection p {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.documentPreview {
+  min-height: 240px;
+  align-content: center;
 }
 
 .factorTable {
@@ -1234,7 +1443,9 @@ main {
   .breakdownGrid,
   .wizardSteps,
   .policyHero,
-  .referralCard {
+  .referralCard,
+  .authorityMatrix,
+  .declarationGrid {
     grid-template-columns: 1fr;
   }
 

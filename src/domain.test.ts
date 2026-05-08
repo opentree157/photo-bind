@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { submissions } from "./data";
+import { auditEvents, policies, submissions, webhookEvents } from "./data";
 import { bindPolicy, buildQuote, canTransition, evaluateEligibility, rateSubmission } from "./domain";
+import { PlatformState, bindSubmission, quoteSubmission } from "./platform";
 
 describe("rating engine", () => {
   it("produces a golden premium breakdown for an automatic portrait submission", () => {
@@ -19,6 +20,44 @@ describe("rating engine", () => {
       stampingFee: 4.47,
       totalDue: 668.14
     });
+  });
+});
+
+describe("platform commands", () => {
+  it("quotes through the workflow and enforces idempotent bind", () => {
+    const quotedSubmission = quoteSubmission({ ...submissions[0], status: "draft" });
+    const quote = buildQuote(quotedSubmission);
+    const state: PlatformState = {
+      submissions: [quotedSubmission],
+      policies: [],
+      auditEvents,
+      webhookEvents,
+      documents: [],
+      idempotencyLedger: {}
+    };
+
+    const boundOnce = bindSubmission(state, quotedSubmission.id, quote.options[1].id, "Agent", "bind-key-1");
+    const boundTwice = bindSubmission(boundOnce, quotedSubmission.id, quote.options[1].id, "Agent", "bind-key-1");
+
+    expect(quotedSubmission.status).toBe("quoted");
+    expect(boundOnce.policies).toHaveLength(1);
+    expect(boundOnce.documents[0].status).toBe("generated");
+    expect(boundTwice.policies).toHaveLength(1);
+    expect(boundTwice.auditEvents[0].action).toBe("bind.idempotent_replay");
+  });
+
+  it("rejects invalid workflow jumps", () => {
+    const quote = buildQuote(submissions[0]);
+    const state: PlatformState = {
+      submissions: [{ ...submissions[0], status: "submitted" }],
+      policies,
+      auditEvents,
+      webhookEvents,
+      documents: [],
+      idempotencyLedger: {}
+    };
+
+    expect(() => bindSubmission(state, submissions[0].id, quote.options[1].id, "Agent", "bad-jump")).toThrow("Invalid transition");
   });
 });
 

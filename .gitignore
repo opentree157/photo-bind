@@ -59,3 +59,10 @@ build-iPhoneSimulator/
 node_modules/
 dist/
 *.tsbuildinfo
+.rubies/
+.gems/
+backend/.bundle/
+backend/log/*
+backend/tmp/*
+!backend/log/.keep
+!backend/tmp/.keep
