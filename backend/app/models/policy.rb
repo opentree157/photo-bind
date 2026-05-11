@@ -1,4 +1,6 @@
 class Policy < ApplicationRecord
+  include AuditableChanges
+
   belongs_to :organization
   belongs_to :agency, optional: true
   belongs_to :submission

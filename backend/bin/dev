@@ -1,2 +1,21 @@
 #!/usr/bin/env ruby
-exec "./bin/rails", "server", *ARGV
+
+commands = [
+  ["web", ["./bin/rails", "server", *ARGV]],
+  ["jobs", ["./bin/jobs"]]
+]
+
+pids = commands.map do |name, command|
+  fork do
+    Dir.chdir(File.expand_path("..", __dir__))
+    $stdout.sync = true
+    $stderr.sync = true
+    puts "[#{name}] starting #{command.join(' ')}"
+    exec(*command)
+  end
+end
+
+trap("INT") { pids.each { |pid| Process.kill("TERM", pid) rescue nil } }
+trap("TERM") { pids.each { |pid| Process.kill("TERM", pid) rescue nil } }
+
+Process.wait

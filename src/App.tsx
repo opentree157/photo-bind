@@ -19,11 +19,31 @@ import {
   Webhook
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { auditEvents, endorsements, policies, quotes, referrals, submissions, webhookEvents } from "./data";
+import { auditEvents, policies, referrals, submissions, webhookEvents } from "./data";
 import { Policy, Role, Submission, buildQuote, canTransition, dollars, evaluateEligibility, rateSubmission, underwritingRules } from "./domain";
-import { DocumentRecord, PlatformState, apiEndpoints, bindSubmission, quoteSubmission, upsertSubmission } from "./platform";
+import {
+  DocumentRecord,
+  PlatformState,
+  apiBase,
+  apiEndpoints,
+  approveReferralApi,
+  bindRenewalQuoteApi,
+  bindSubmission,
+  createAndQuoteSubmission,
+  createEndorsementApi,
+  createRenewalApi,
+  createSession,
+  declineReferralApi,
+  fetchPlatformState,
+  fetchRatingTable,
+  issueEndorsementApi,
+  quoteSubmission,
+  requestBindApi,
+  saveRatingFactor,
+  upsertSubmission
+} from "./platform";
 
-type View = "dashboard" | "submission" | "quotes" | "underwriting" | "policy" | "admin" | "analytics";
+type View = "dashboard" | "submission" | "quotes" | "underwriting" | "policy" | "renewals" | "admin" | "analytics";
 type Workspace = "frontoffice" | "backoffice";
 
 const navItems: Array<{ view: View; label: string; icon: typeof LayoutDashboard }> = [
@@ -32,6 +52,7 @@ const navItems: Array<{ view: View; label: string; icon: typeof LayoutDashboard 
   { view: "quotes", label: "Quotes", icon: SlidersHorizontal },
   { view: "underwriting", label: "Underwriting", icon: UserCheck },
   { view: "policy", label: "Policy", icon: FileBadge },
+  { view: "renewals", label: "Renewals", icon: GitBranch },
   { view: "admin", label: "Admin", icon: Settings },
   { view: "analytics", label: "Analytics", icon: BarChart3 }
 ];
@@ -42,8 +63,6 @@ const roleCapabilities: Record<Role, string> = {
   admin: "Configure rates, rules, appetite, and forms.",
   applicant: "Use the public quote flow with internal actions hidden."
 };
-
-const storageKey = "photobind.platformState.v1";
 
 function initialPlatformState(): PlatformState {
   const seededDocuments = policies.map((policy) => ({
@@ -61,27 +80,13 @@ function initialPlatformState(): PlatformState {
     auditEvents,
     webhookEvents,
     documents: seededDocuments,
-    idempotencyLedger: {}
+    idempotencyLedger: {},
+    renewalWorkItems: { expiringPolicies: [], renewalSubmissions: [] }
   };
 }
 
 function loadPlatformState() {
-  try {
-    const stored = window.localStorage.getItem(storageKey);
-    if (!stored) return initialPlatformState();
-    const parsed = JSON.parse(stored) as Partial<PlatformState>;
-    const seed = initialPlatformState();
-    return {
-      submissions: parsed.submissions ?? seed.submissions,
-      policies: parsed.policies ?? seed.policies,
-      auditEvents: parsed.auditEvents ?? seed.auditEvents,
-      webhookEvents: parsed.webhookEvents ?? seed.webhookEvents,
-      documents: parsed.documents ?? seed.documents,
-      idempotencyLedger: parsed.idempotencyLedger ?? {}
-    };
-  } catch {
-    return initialPlatformState();
-  }
+  return initialPlatformState();
 }
 
 export function App() {
@@ -89,6 +94,8 @@ export function App() {
   const [role, setRole] = useState<Role>("agent");
   const [workspace, setWorkspace] = useState<Workspace>("backoffice");
   const [platformState, setPlatformState] = useState<PlatformState>(loadPlatformState());
+  const [apiToken, setApiToken] = useState("");
+  const [apiStatus, setApiStatus] = useState("Connecting Rails API...");
   const [selectedSubmissionId, setSelectedSubmissionId] = useState("SUB-1007");
   const [selectedQuoteOptionId, setSelectedQuoteOptionId] = useState("SUB-1007-OPT-2");
   const allSubmissions = platformState.submissions;
@@ -97,16 +104,69 @@ export function App() {
   const selectedOption = selectedQuote.options.find((option) => option.id === selectedQuoteOptionId) ?? selectedQuote.options[1];
 
   useEffect(() => {
-    window.localStorage.setItem(storageKey, JSON.stringify(platformState));
-  }, [platformState]);
+    let cancelled = false;
+    async function boot() {
+      try {
+        const session = await createSession(role);
+        if (cancelled) return;
+        setApiToken(session.token);
+        const nextState = await fetchPlatformState(session.token);
+        if (cancelled) return;
+        if (nextState.submissions.length > 0) {
+          setPlatformState(nextState);
+          setSelectedSubmissionId(nextState.submissions[0].id);
+          setSelectedQuoteOptionId(`${nextState.submissions[0].id}-OPT-2`);
+        }
+        setApiStatus(`Rails API connected as ${session.user.role}`);
+      } catch (error) {
+        setApiStatus(`Rails API unavailable: ${error instanceof Error ? error.message : "unknown error"}`);
+      }
+    }
+    boot();
+    return () => {
+      cancelled = true;
+    };
+  }, [role]);
 
-  function upsertApplicantSubmission(submission: Submission) {
-    setPlatformState((current) => upsertSubmission(current, submission, "Applicant"));
-    setSelectedSubmissionId(submission.id);
+  async function refreshFromRails(token = apiToken) {
+    if (!token) return;
+    const nextState = await fetchPlatformState(token);
+    if (nextState.submissions.length > 0) {
+      setPlatformState(nextState);
+      setSelectedSubmissionId((current) => (nextState.submissions.some((item) => item.id === current) ? current : nextState.submissions[0].id));
+    }
   }
 
-  function requestBind(submissionId: string, optionId: string, actor: string) {
+  async function upsertApplicantSubmission(submission: Submission) {
+    if (!apiToken) {
+      setPlatformState((current) => upsertSubmission(current, submission, "Applicant"));
+      setSelectedSubmissionId(submission.id);
+      return;
+    }
+    try {
+      const created = await createAndQuoteSubmission(submission, apiToken);
+      await refreshFromRails();
+      setSelectedSubmissionId(created.id);
+      setApiStatus("Rails API saved and quoted applicant submission");
+    } catch (error) {
+      setApiStatus(`Rails API submission failed: ${error instanceof Error ? error.message : "unknown error"}`);
+    }
+  }
+
+  async function requestBind(submissionId: string, optionId: string, actor: string) {
     const idempotencyKey = `bind:${submissionId}:${optionId}`;
+    const submission = platformState.submissions.find((item) => item.id === submissionId);
+    const tier = buildQuote(submission ?? selectedSubmission).options.find((option) => option.id === optionId)?.tier ?? "Standard";
+    if (apiToken && submission) {
+      try {
+        await requestBindApi(submission, tier, apiToken, actor.toLowerCase());
+        await refreshFromRails();
+        setApiStatus("Rails API accepted bind request and queued document generation");
+        return;
+      } catch (error) {
+        setApiStatus(`Rails API bind failed: ${error instanceof Error ? error.message : "unknown error"}`);
+      }
+    }
     setPlatformState((current) => bindSubmission(current, submissionId, optionId, actor, idempotencyKey));
     setSelectedSubmissionId(submissionId);
   }
@@ -169,7 +229,7 @@ export function App() {
 
       <main>
         <Topbar selectedSubmission={selectedSubmission} setSelectedSubmissionId={setSelectedSubmissionId} submissions={allSubmissions} />
-        {view === "dashboard" && <Dashboard role={role} setView={setView} setSelectedSubmissionId={setSelectedSubmissionId} submissions={allSubmissions} />}
+        {view === "dashboard" && <Dashboard policyCount={platformState.policies.length} role={role} setView={setView} setSelectedSubmissionId={setSelectedSubmissionId} submissions={allSubmissions} />}
         {view === "submission" && <SubmissionWizard role={role} submission={selectedSubmission} />}
         {view === "quotes" && (
           <QuoteCompare
@@ -181,10 +241,11 @@ export function App() {
             submission={selectedSubmission}
           />
         )}
-        {view === "underwriting" && <UnderwritingQueue role={role} />}
-        {view === "policy" && <PolicyDetail documents={platformState.documents} policies={platformState.policies} />}
-        {view === "admin" && <AdminEditor auditEvents={platformState.auditEvents} role={role} webhookEvents={platformState.webhookEvents} />}
-        {view === "analytics" && <Analytics />}
+        {view === "underwriting" && <UnderwritingQueue onChanged={refreshFromRails} role={role} token={apiToken} />}
+        {view === "policy" && <PolicyDetail documents={platformState.documents} onChanged={refreshFromRails} policies={platformState.policies} token={apiToken} />}
+        {view === "renewals" && <RenewalWorkbench onChanged={refreshFromRails} renewalWorkItems={platformState.renewalWorkItems} token={apiToken} />}
+        {view === "admin" && <AdminEditor auditEvents={platformState.auditEvents} role={role} token={apiToken} webhookEvents={platformState.webhookEvents} onChanged={refreshFromRails} />}
+        {view === "analytics" && <Analytics policyCount={platformState.policies.length} renewalWorkItems={platformState.renewalWorkItems} submissions={allSubmissions} />}
       </main>
 
       <aside className="rightRail">
@@ -195,6 +256,7 @@ export function App() {
 
         <section className="railSection">
           <h2>Selected Option</h2>
+          <small>{apiStatus}</small>
           <div className="selectedOption">
             <strong>{selectedOption.tier}</strong>
             <span>{selectedOption.limit}</span>
@@ -225,10 +287,10 @@ function FrontofficePortal({
   onSubmissionChange,
   role
 }: {
-  onBindRequest: (submissionId: string, optionId: string) => void;
+  onBindRequest: (submissionId: string, optionId: string) => void | Promise<void>;
   onBackoffice: () => void;
   onRoleChange: (role: Role) => void;
-  onSubmissionChange: (submission: Submission) => void;
+  onSubmissionChange: (submission: Submission) => void | Promise<void>;
   role: Role;
 }) {
   type FrontStep = "questions" | "loading" | "quotes" | "bind";
@@ -296,7 +358,7 @@ function FrontofficePortal({
   }
 
   function submitQuote() {
-    onSubmissionChange(quoteSubmission({ ...publicSubmission, status: "draft" }));
+    void onSubmissionChange(quoteSubmission({ ...publicSubmission, status: "draft" }));
     setFrontStep("loading");
     setBindRequested(false);
     window.setTimeout(() => setFrontStep("quotes"), 5000);
@@ -577,8 +639,8 @@ function FrontofficePortal({
                   disabled={form.signatureName.trim().length === 0}
                   type="button"
                   onClick={() => {
-                    onSubmissionChange({ ...publicSubmission, status: quotedStatus, selectedQuoteOptionId: selectedOption.id });
-                    onBindRequest(publicSubmission.id, selectedOption.id);
+                    void onSubmissionChange({ ...publicSubmission, status: quotedStatus, selectedQuoteOptionId: selectedOption.id });
+                    void onBindRequest(publicSubmission.id, selectedOption.id);
                     setBindRequested(true);
                   }}
                 >
@@ -627,10 +689,12 @@ function Topbar({
 
 function Dashboard({
   role,
+  policyCount,
   setView,
   setSelectedSubmissionId,
   submissions
 }: {
+  policyCount: number;
   role: Role;
   setView: (view: View) => void;
   setSelectedSubmissionId: (id: string) => void;
@@ -642,7 +706,7 @@ function Dashboard({
   }));
   const openCount = submissions.filter((submission) => !["issued", "cancelled", "declined", "ineligible"].includes(submission.status)).length;
   const referralRate = Math.round((submissions.filter((submission) => submission.status === "referred").length / submissions.length) * 100);
-  const quoteToBind = Math.round((policies.length / quotes.length) * 100);
+  const quoteToBind = Math.round((policyCount / Math.max(submissions.length, 1)) * 100);
   const averagePremium = Math.round(submissions.reduce((sum, submission) => sum + rateSubmission(submission).totalDue, 0) / submissions.length);
 
   return (
@@ -820,7 +884,7 @@ function QuoteCompare({
   selectedOptionId,
   setSelectedOptionId
 }: {
-  onBindRequest: (optionId: string) => void;
+  onBindRequest: (optionId: string) => void | Promise<void>;
   role: Role;
   submission: Submission;
   quote: ReturnType<typeof buildQuote>;
@@ -841,7 +905,7 @@ function QuoteCompare({
           className="primaryButton"
           disabled={role === "underwriter" || role === "admin" || role === "applicant"}
           onClick={() => {
-            onBindRequest(selectedOption.id);
+            void onBindRequest(selectedOption.id);
             setBindRequested(true);
           }}
         >
@@ -897,9 +961,44 @@ function QuoteCompare({
   );
 }
 
-function UnderwritingQueue({ role }: { role: Role }) {
+function UnderwritingQueue({ onChanged, role, token }: { onChanged: () => void | Promise<void>; role: Role; token: string }) {
   const [showAuthorityMatrix, setShowAuthorityMatrix] = useState(false);
   const [decisions, setDecisions] = useState<Record<string, "approved" | "declined">>({});
+  const [serverReferrals, setServerReferrals] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (!token || role !== "underwriter") return;
+    void fetch(`${apiBase}/api/underwriting/referrals`, {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+      .then((response) => (response.ok ? response.json() : []))
+      .then(setServerReferrals);
+  }, [role, token, decisions]);
+
+  const queueItems: Array<{
+    id: string;
+    submissionId: string;
+    submission: any;
+    triggers: Array<{ action: "decline" | "refer"; code: string; label: string }>;
+    notes: string[];
+    assignedTo: string;
+  }> = serverReferrals.length
+    ? serverReferrals.map((referral) => ({
+        id: String(referral.id),
+        submissionId: String(referral.submission_id),
+        submission: referral.submission,
+        triggers: (referral.triggered_rules ?? []).map((rule: any) => ({
+          code: rule.code,
+          label: rule.description,
+          action: rule.action
+        })),
+        notes: referral.notes ? [referral.notes] : [],
+        assignedTo: referral.assigned_to_id ? `User ${referral.assigned_to_id}` : "Unassigned"
+      }))
+    : referrals.map((referral) => ({
+        ...referral,
+        submission: submissions.find((item) => item.id === referral.submissionId)
+      }));
 
   return (
     <div className="content">
@@ -932,14 +1031,14 @@ function UnderwritingQueue({ role }: { role: Role }) {
       )}
 
       <section className="queue">
-        {referrals.map((referral) => {
-          const submission = submissions.find((item) => item.id === referral.submissionId)!;
+        {queueItems.map((referral) => {
+          const submission = referral.submission;
           return (
             <div className="referralCard" key={referral.id}>
               <div>
                 <span>{referral.id}</span>
-                <h3>{submission.business.name}</h3>
-                <p>{dollars(submission.business.annualRevenue)} revenue / {submission.risk.classCode}</p>
+                <h3>{submission.business?.name ?? submission.business?.legal_name ?? "Referral"}</h3>
+                <p>{submission.business?.annualRevenue ? dollars(submission.business.annualRevenue) : "Rails referral"} revenue / {submission.risk?.classCode ?? submission.risk?.class_code}</p>
               </div>
               <div className="ruleList">
                 {referral.triggers.map((trigger) => (
@@ -961,8 +1060,28 @@ function UnderwritingQueue({ role }: { role: Role }) {
                   </div>
                 ) : (
                   <>
-                    <button className="secondaryButton" disabled={role !== "underwriter"} onClick={() => setDecisions((current) => ({ ...current, [referral.id]: "declined" }))}>Decline</button>
-                    <button className="primaryButton" disabled={role !== "underwriter"} onClick={() => setDecisions((current) => ({ ...current, [referral.id]: "approved" }))}>Approve with terms</button>
+                    <button
+                      className="secondaryButton"
+                      disabled={role !== "underwriter" || !token}
+                      onClick={async () => {
+                        await declineReferralApi(referral.id, token, "Declined in underwriting queue");
+                        setDecisions((current) => ({ ...current, [referral.id]: "declined" }));
+                        await onChanged();
+                      }}
+                    >
+                      Decline
+                    </button>
+                    <button
+                      className="primaryButton"
+                      disabled={role !== "underwriter" || !token}
+                      onClick={async () => {
+                        await approveReferralApi(referral.id, token, "Approved with standard terms");
+                        setDecisions((current) => ({ ...current, [referral.id]: "approved" }));
+                        await onChanged();
+                      }}
+                    >
+                      Approve with terms
+                    </button>
                   </>
                 )}
               </div>
@@ -974,12 +1093,51 @@ function UnderwritingQueue({ role }: { role: Role }) {
   );
 }
 
-function PolicyDetail({ documents, policies }: { documents: DocumentRecord[]; policies: Policy[] }) {
+function PolicyDetail({
+  documents,
+  onChanged,
+  policies,
+  token
+}: {
+  documents: DocumentRecord[];
+  onChanged: () => void | Promise<void>;
+  policies: Policy[];
+  token: string;
+}) {
   const policy = policies[0];
   const [selectedDocument, setSelectedDocument] = useState<string | null>(null);
+  const [endorsementKind, setEndorsementKind] = useState<"revenue_change" | "limit_change" | "address_change">("revenue_change");
+  const [endorsementRevenue, setEndorsementRevenue] = useState("850000");
+  const [endorsementLimit, setEndorsementLimit] = useState("2000000");
+  const [endorsementState, setEndorsementState] = useState("CT");
+  const [quotedEndorsement, setQuotedEndorsement] = useState<any | null>(null);
+  const [actionMessage, setActionMessage] = useState("");
+  if (!policy) {
+    return (
+      <div className="content">
+        <section className="pageHeader">
+          <div>
+            <p>Policy detail</p>
+            <h2>No issued policies yet</h2>
+          </div>
+        </section>
+      </div>
+    );
+  }
   const quoteOption = policy.snapshot.quoteOption;
   const insuredState = policy.snapshot.submission.business.state;
   const isDeclaration = selectedDocument === "Declaration page";
+  const policyEndorsements = ((policy as any).endorsements ?? []) as Array<{ id: string | number; change_type: string; premium_delta_cents: number; status: string }>;
+
+  function endorsementChangeRequest(): Record<string, string | number> {
+    if (endorsementKind === "limit_change") {
+      return { change_type: endorsementKind, limit_cents: Number(endorsementLimit) * 100, effective_date: new Date().toISOString().slice(0, 10) };
+    }
+    if (endorsementKind === "address_change") {
+      return { change_type: endorsementKind, state: endorsementState, line1: "Updated address", city: "Updated city", effective_date: new Date().toISOString().slice(0, 10) };
+    }
+    return { change_type: endorsementKind, annual_revenue_cents: Number(endorsementRevenue) * 100, effective_date: new Date().toISOString().slice(0, 10) };
+  }
 
   return (
     <div className="content">
@@ -993,6 +1151,13 @@ function PolicyDetail({ documents, policies }: { documents: DocumentRecord[]; po
           Declaration PDF
         </button>
       </section>
+
+      {actionMessage && (
+        <div className="actionNotice">
+          <Sparkles size={18} />
+          {actionMessage}
+        </div>
+      )}
 
       <section className="policyHero">
         <div>
@@ -1031,13 +1196,84 @@ function PolicyDetail({ documents, policies }: { documents: DocumentRecord[]; po
         <div className="panel">
           <div className="panelHeader">
             <h3>Endorsements</h3>
-            <span>{endorsements.length} open</span>
+            <span>{policyEndorsements.length} policy endorsements</span>
           </div>
-          {endorsements.map((endorsement) => (
+          <div className="endorsementComposer">
+            <label className="questionField">
+              <span>Change type</span>
+              <select value={endorsementKind} onChange={(event: { target: { value: "revenue_change" | "limit_change" | "address_change" } }) => setEndorsementKind(event.target.value)}>
+                <option value="revenue_change">Revenue change</option>
+                <option value="limit_change">Limit change</option>
+                <option value="address_change">Address change</option>
+              </select>
+            </label>
+            {endorsementKind === "limit_change" && (
+              <label className="questionField">
+                <span>New occurrence limit</span>
+                <select value={endorsementLimit} onChange={(event: { target: { value: string } }) => setEndorsementLimit(event.target.value)}>
+                  <option value="1000000">$1,000,000</option>
+                  <option value="2000000">$2,000,000</option>
+                </select>
+              </label>
+            )}
+            {endorsementKind === "address_change" && (
+              <label className="questionField">
+                <span>New rating state</span>
+                <select value={endorsementState} onChange={(event: { target: { value: string } }) => setEndorsementState(event.target.value)}>
+                  {["MA", "CT", "RI", "NH"].map((state) => <option key={state} value={state}>{state}</option>)}
+                </select>
+              </label>
+            )}
+            {endorsementKind === "revenue_change" && (
+            <label className="questionField">
+              <span>New annual revenue</span>
+              <input value={endorsementRevenue} onChange={(event: { target: { value: string } }) => setEndorsementRevenue(digitsOnly(event.target.value))} />
+            </label>
+            )}
+            <button
+              className="primaryButton"
+              disabled={!token}
+              type="button"
+              onClick={async () => {
+                const endorsement = await createEndorsementApi(policy.id, token, endorsementChangeRequest());
+                setQuotedEndorsement(endorsement);
+                setActionMessage(`Endorsement quoted with premium delta ${dollars(Math.round((endorsement.premium_delta_cents ?? 0) / 100))}. Review it before issue.`);
+                await onChanged();
+              }}
+            >
+              Quote endorsement
+            </button>
+            <button
+              className="secondaryButton"
+              disabled={!token || !quotedEndorsement}
+              type="button"
+              onClick={async () => {
+                await issueEndorsementApi(policy.id, String(quotedEndorsement.id), token);
+                setQuotedEndorsement(null);
+                setActionMessage("Endorsement issued, document generation queued, and policy returned to issued status.");
+                await onChanged();
+              }}
+            >
+              Issue quoted endorsement
+            </button>
+            <button
+              className="secondaryButton"
+              disabled={!token}
+              type="button"
+              onClick={async () => {
+                await createRenewalApi(policy.id, token);
+                setActionMessage("Renewal quote hook created a renewal submission and quote.");
+                await onChanged();
+              }}
+            >
+              Create renewal quote
+            </button>
+          </div>
+          {policyEndorsements.map((endorsement) => (
             <div className="documentRow" key={endorsement.id}>
               <Sparkles size={18} />
-              <span>{labelize(endorsement.type)}</span>
-              <b>{dollars(endorsement.premiumDelta)}</b>
+              <span>{labelize(endorsement.change_type)}</span>
+              <b>{dollars(Math.round(endorsement.premium_delta_cents / 100))} / {endorsement.status}</b>
             </div>
           ))}
         </div>
@@ -1141,22 +1377,164 @@ function PolicyDetail({ documents, policies }: { documents: DocumentRecord[]; po
   );
 }
 
+function RenewalWorkbench({
+  onChanged,
+  renewalWorkItems,
+  token
+}: {
+  onChanged: () => void | Promise<void>;
+  renewalWorkItems?: { expiringPolicies: any[]; renewalSubmissions: any[] };
+  token: string;
+}) {
+  const [message, setMessage] = useState("");
+  const [busyKey, setBusyKey] = useState("");
+  const expiringPolicies = renewalWorkItems?.expiringPolicies ?? [];
+  const renewalSubmissions = renewalWorkItems?.renewalSubmissions ?? [];
+
+  async function createRenewal(policyId: string) {
+    setBusyKey(`create-${policyId}`);
+    try {
+      await createRenewalApi(policyId, token);
+      setMessage("Renewal submission created, rated, and placed into the renewal quote queue.");
+      await onChanged();
+    } finally {
+      setBusyKey("");
+    }
+  }
+
+  async function bindRenewal(submission: any, option: any) {
+    setBusyKey(`bind-${submission.id}`);
+    try {
+      await bindRenewalQuoteApi(String(submission.quotes?.[0]?.id), String(option.id), submission.effective_date, token);
+      setMessage(`Renewal for ${submission.business?.legal_name} bound and queued for issuance documents.`);
+      await onChanged();
+    } finally {
+      setBusyKey("");
+    }
+  }
+
+  return (
+    <div className="content">
+      <section className="pageHeader">
+        <div>
+          <p>Renewal workbench</p>
+          <h2>Expiring-policy queue, renewal quote review, and renewal bind</h2>
+        </div>
+      </section>
+
+      {message && (
+        <div className="actionNotice">
+          <GitBranch size={18} />
+          {message}
+        </div>
+      )}
+
+      <section className="metricGrid">
+        <Metric label="Expiring in 90 days" value={`${expiringPolicies.length}`} trend="Renewal queue" />
+        <Metric label="Renewal quotes" value={`${renewalSubmissions.length}`} trend="Created from expiring policies" />
+        <Metric label="Issued renewals" value={`${renewalSubmissions.filter((submission) => submission.stage === "issued").length}`} trend="Bound renewal terms" />
+        <Metric label="Open renewal work" value={`${renewalSubmissions.filter((submission) => submission.stage !== "issued").length}`} trend="Needs bind decision" />
+      </section>
+
+      <section className="split">
+        <div className="panel">
+          <div className="panelHeader">
+            <h3>Expiring Policy Queue</h3>
+            <span>{expiringPolicies.length} policies</span>
+          </div>
+          <div className="table">
+            {expiringPolicies.map((policy) => (
+              <div className="documentRow" key={policy.id}>
+                <FileBadge size={18} />
+                <span>
+                  {policy.policy_number}
+                  <small>{policy.submission?.business?.legal_name} / {policy.days_to_expiration} days left</small>
+                </span>
+                <b>{policy.renewal_status}</b>
+                <button className="secondaryButton" disabled={!token || busyKey === `create-${policy.id}` || policy.renewal_status !== "not_started"} onClick={() => createRenewal(String(policy.id))}>
+                  Create renewal
+                </button>
+              </div>
+            ))}
+            {!expiringPolicies.length && <p className="emptyText">No policies expire in the next 90 days.</p>}
+          </div>
+        </div>
+
+        <div className="panel">
+          <div className="panelHeader">
+            <h3>Renewal Quote Queue</h3>
+            <span>{renewalSubmissions.length} quotes</span>
+          </div>
+          <div className="table">
+            {renewalSubmissions.map((submission) => {
+              const quote = submission.quotes?.[0];
+              const options = quote?.quote_options ?? [];
+              const selected = options.find((option: any) => option.tier === "Standard") ?? options[0];
+              return (
+                <div className="renewalCard" key={submission.id}>
+                  <div>
+                    <strong>{submission.business?.legal_name}</strong>
+                    <span>Renewal of {submission.renewal_of} / effective {submission.effective_date}</span>
+                    <small>{submission.narrative}</small>
+                  </div>
+                  <div className="quoteMiniGrid">
+                    {options.map((option: any) => (
+                      <span key={option.id}>
+                        {option.tier}
+                        <b>{dollars(Math.round((option.total_due_cents ?? 0) / 100))}</b>
+                      </span>
+                    ))}
+                  </div>
+                  <button className="primaryButton" disabled={!token || !selected || submission.stage === "issued" || busyKey === `bind-${submission.id}`} onClick={() => bindRenewal(submission, selected)}>
+                    Bind renewal
+                  </button>
+                </div>
+              );
+            })}
+            {!renewalSubmissions.length && <p className="emptyText">Create a renewal quote from an expiring policy to start the renewal bind workflow.</p>}
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function AdminEditor({
   auditEvents,
+  onChanged,
   role,
+  token,
   webhookEvents
 }: {
   auditEvents: { action: string; detail: string; id: string }[];
+  onChanged: () => void | Promise<void>;
   role: Role;
+  token: string;
   webhookEvents: { id: string; payload: string; status: string; type: string }[];
 }) {
   const [published, setPublished] = useState(false);
-  const factors = [
-    ["MA", "PHOTO-PORTRAIT", "1.12", "1.00", "active"],
-    ["CT", "PHOTO-DRONE", "1.06", "1.35", "review"],
-    ["RI", "PHOTO-WEDDING", "1.02", "1.18", "active"],
-    ["NH", "PHOTO-STUDIO", "0.96", "0.94", "active"]
-  ];
+  const [ratingRows, setRatingRows] = useState<Array<Record<string, string>>>([]);
+  const [factorDraft, setFactorDraft] = useState({
+    state: "MA",
+    class_code: "PHOTO_GL",
+    factor_type: "territory",
+    band: "default",
+    factor: "1.10"
+  });
+
+  useEffect(() => {
+    if (!token || role !== "admin") return;
+    void fetchRatingTable(token).then((table) => {
+      setRatingRows((table.factors ?? []).slice(0, 12).map((factor: any) => ({
+        state: factor.state,
+        class_code: factor.class_code,
+        factor_type: factor.factor_type,
+        band: factor.band,
+        factor: String(factor.factor),
+        active: factor.active ? "active" : "inactive"
+      })));
+    });
+  }, [role, token, published]);
 
   return (
     <div className="content">
@@ -1165,7 +1543,23 @@ function AdminEditor({
           <p>Admin/Product manager</p>
           <h2>Rating tables, forms, appetite, and rule versions</h2>
         </div>
-        <button className="primaryButton" disabled={role !== "admin"} onClick={() => setPublished(true)}>
+        <button
+          className="primaryButton"
+          disabled={role !== "admin" || !token}
+          onClick={async () => {
+            await saveRatingFactor(token, {
+              version: "2026.05.01",
+              state: factorDraft.state,
+              class_code: factorDraft.class_code,
+              factor_type: factorDraft.factor_type,
+              band: factorDraft.band,
+              factor: Number(factorDraft.factor),
+              active: true
+            });
+            setPublished(true);
+            await onChanged();
+          }}
+        >
           <Settings size={18} />
           {published ? "Published" : "Publish version"}
         </button>
@@ -1184,12 +1578,25 @@ function AdminEditor({
             <h3>Rating Table</h3>
             <span>RT-2026.05.01</span>
           </div>
+          <div className="factorEditor">
+            {(["state", "class_code", "factor_type", "band", "factor"] as const).map((field) => (
+              <label className="questionField" key={field}>
+                <span>{labelize(field)}</span>
+                <input value={factorDraft[field]} onChange={(event: { target: { value: string } }) => setFactorDraft((current) => ({ ...current, [field]: event.target.value }))} />
+              </label>
+            ))}
+          </div>
           <div className="factorTable">
-            {factors.map((row) => (
-              <div key={row.join("-")}>
-                {row.map((cell) => (
-                  <span key={cell}>{cell}</span>
-                ))}
+            {(ratingRows.length ? ratingRows : [
+              { state: "MA", class_code: "PHOTO_GL", factor_type: "territory", band: "default", factor: "1.10", active: "active" }
+            ]).map((row) => (
+              <div key={Object.values(row).join("-")}>
+                <span>{row.state}</span>
+                <span>{row.class_code}</span>
+                <span>{row.factor_type}</span>
+                <span>{row.band}</span>
+                <span>{row.factor}</span>
+                <span>{row.active}</span>
               </div>
             ))}
           </div>
@@ -1264,9 +1671,22 @@ function AdminEditor({
   );
 }
 
-function Analytics() {
-  const quoteToBind = Math.round((policies.length / quotes.length) * 100);
-  const referralRate = Math.round((referrals.length / submissions.length) * 100);
+function Analytics({
+  policyCount,
+  renewalWorkItems,
+  submissions
+}: {
+  policyCount: number;
+  renewalWorkItems?: { expiringPolicies: any[]; renewalSubmissions: any[] };
+  submissions: Submission[];
+}) {
+  const quoteToBind = Math.round((policyCount / Math.max(submissions.length, 1)) * 100);
+  const referralRate = Math.round((submissions.filter((submission) => submission.status === "referred").length / Math.max(submissions.length, 1)) * 100);
+  const portfolioPremium = submissions.reduce((sum, submission) => sum + rateSubmission(submission).totalDue, 0);
+  const classMix = ["PHOTO-PORTRAIT", "PHOTO-WEDDING", "PHOTO-STUDIO", "PHOTO-DRONE"].map((classCode) => {
+    const count = submissions.filter((submission) => submission.risk.classCode === classCode).length;
+    return [labelize(classCode.replace("PHOTO-", "")), Math.round((count / Math.max(submissions.length, 1)) * 100)] as const;
+  });
 
   return (
     <div className="content">
@@ -1278,19 +1698,47 @@ function Analytics() {
       </section>
 
       <section className="metricGrid">
-        <Metric label="Submission volume" value="146" trend="+18%" />
-        <Metric label="Referral rate" value={`${referralRate}%`} trend="-2%" />
-        <Metric label="Quote-to-bind" value={`${quoteToBind}%`} trend="+5%" />
-        <Metric label="Portfolio premium" value="$172k" trend="+11%" />
+        <Metric label="Submission volume" value={`${submissions.length}`} trend="Rails book" />
+        <Metric label="Referral rate" value={`${referralRate}%`} trend="Rails book" />
+        <Metric label="Quote-to-bind" value={`${quoteToBind}%`} trend="Rails book" />
+        <Metric label="Portfolio premium" value={dollars(portfolioPremium)} trend="Rails book" />
+      </section>
+
+      <section className="split">
+        <div className="panel">
+          <div className="panelHeader">
+            <h3>Renewal Workload</h3>
+            <span>{renewalWorkItems?.expiringPolicies.length ?? 0} expiring</span>
+          </div>
+          <div className="table">
+            {(renewalWorkItems?.expiringPolicies ?? []).slice(0, 5).map((policy: any) => (
+              <div className="documentRow" key={policy.id}>
+                <FileBadge size={18} />
+                <span>{policy.policy_number}</span>
+                <b>{policy.expiration_date}</b>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="panel">
+          <div className="panelHeader">
+            <h3>Renewal Quotes</h3>
+            <span>{renewalWorkItems?.renewalSubmissions.length ?? 0} created</span>
+          </div>
+          <div className="table">
+            {(renewalWorkItems?.renewalSubmissions ?? []).slice(0, 5).map((submission: any) => (
+              <div className="documentRow" key={submission.id}>
+                <ClipboardList size={18} />
+                <span>{submission.business?.legal_name}</span>
+                <b>{submission.status}</b>
+              </div>
+            ))}
+          </div>
+        </div>
       </section>
 
       <section className="analyticsGrid">
-        {[
-          ["Portrait", 34],
-          ["Wedding", 28],
-          ["Studio", 22],
-          ["Drone", 16]
-        ].map(([label, value]) => (
+        {classMix.map(([label, value]) => (
           <div className="analyticsBar" key={label}>
             <span>{label}</span>
             <div><i style={{ width: `${value}%` }} /></div>

@@ -5,6 +5,8 @@ module Api
     end
 
     def request_bind
+      raise ArgumentError, "Only agents and applicants can request bind" unless %w[agent applicant].include?(current_user.role)
+
       option = quote.quote_options.find(params.require(:quote_option_id))
       result = BindPolicy.call!(
         quote_option: option,

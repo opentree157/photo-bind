@@ -8,7 +8,7 @@ class UnderwritingEngine
     rules = active_rules
     triggered = rules.select { |rule| matches?(rule.condition, submission, risk) }
     action = triggered.any? { |rule| rule.action == "decline" } ? "decline" : triggered.any? ? "refer" : "quote"
-    { action:, rules_version: DEFAULT_RULE_VERSION, triggered_rules: triggered.map { |rule| rule.slice(:code, :action, :description) } }
+    { action:, rules_version: DEFAULT_RULE_VERSION, triggered_rules: triggered.map { |rule| rule_payload(rule) } }
   end
 
   def self.active_rules
@@ -40,5 +40,13 @@ class UnderwritingEngine
     when "not_in" then !expected.include?(actual)
     else false
     end
+  end
+
+  def self.rule_payload(rule)
+    {
+      code: rule.respond_to?(:code) ? rule.code : rule[:code],
+      action: rule.respond_to?(:action) ? rule.action : rule[:action],
+      description: rule.respond_to?(:description) ? rule.description : rule[:description]
+    }
   end
 end

@@ -38,7 +38,21 @@ end
 end
 
 %w[MA CT RI NH].each do |state|
-  RatingFactor.find_or_create_by!(version: RatingEngine::RATING_VERSION, state:, class_code: "PHOTO_GL", factor_type: "territory", band: "default") do |factor|
-    factor.factor = RatingEngine::TERRITORY.fetch(state)
+  [
+    ["territory", "PHOTO_GL", "default", RatingEngine::TERRITORY.fetch(state)],
+    ["class", "PHOTO_GL", "default", 1.25],
+    ["class", "PHOTO-PORTRAIT", "default", 1.0],
+    ["class", "PHOTO-WEDDING", "default", 1.18],
+    ["class", "PHOTO-STUDIO", "default", 0.94],
+    ["class", "PHOTO-DRONE", "default", 1.35],
+    ["revenue", "PHOTO_GL", "lt_100k", 0.82],
+    ["revenue", "PHOTO_GL", "100k_300k", 1.0],
+    ["revenue", "PHOTO_GL", "300k_750k", 1.18],
+    ["revenue", "PHOTO_GL", "750k_1_5m", 1.4],
+    ["revenue", "PHOTO_GL", "gte_1_5m", 1.7]
+  ].each do |factor_type, class_code, band, value|
+    RatingFactor.find_or_create_by!(version: RatingEngine::RATING_VERSION, state:, class_code:, factor_type:, band:) do |factor|
+      factor.factor = value
+    end
   end
 end

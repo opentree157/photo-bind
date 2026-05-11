@@ -1,0 +1,28 @@
+{
+  "title": "PhotoBind API Operations",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Rails request latency p95",
+      "targets": [{ "expr": "histogram_quantile(0.95, sum(rate(http_server_duration_bucket{service_name=\"photobind-api\"}[5m])) by (le))" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Quote and bind spans",
+      "targets": [{ "expr": "sum(rate(traces_spanmetrics_calls_total{service_name=\"photobind-api\", span_name=~\"rating.quote|policy.bind\"}[5m])) by (span_name)" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Background job throughput",
+      "targets": [{ "expr": "sum(rate(sidekiq_jobs_total[5m])) by (queue)" }]
+    },
+    {
+      "type": "stat",
+      "title": "API error rate",
+      "targets": [{ "expr": "sum(rate(http_server_duration_count{service_name=\"photobind-api\", http_status_code=~\"5..\"}[5m])) / sum(rate(http_server_duration_count{service_name=\"photobind-api\"}[5m]))" }]
+    }
+  ]
+}

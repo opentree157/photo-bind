@@ -1,0 +1,7 @@
+tunnel: photobind-api
+credentials-file: /etc/cloudflared/photobind-api.json
+
+ingress:
+  - hostname: api.photobind.example.com
+    service: http://rails:3000
+  - service: http_status:404

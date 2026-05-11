@@ -1402,6 +1402,49 @@ button.documentRow:hover {
   padding: 18px;
 }
 
+.renewalCard {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(260px, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 16px 0;
+  border-bottom: 1px solid #edf2ee;
+}
+
+.renewalCard strong,
+.renewalCard span,
+.renewalCard small,
+.documentRow small {
+  display: block;
+}
+
+.renewalCard small,
+.documentRow small,
+.emptyText {
+  color: #61716b;
+  font-size: 12px;
+}
+
+.quoteMiniGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.quoteMiniGrid span {
+  border: 1px solid #d9e3dd;
+  border-radius: 8px;
+  padding: 8px;
+  background: #f9fbf9;
+  font-size: 12px;
+}
+
+.quoteMiniGrid b {
+  display: block;
+  color: #10231f;
+  margin-top: 4px;
+}
+
 @media (max-width: 1180px) {
   .appShell {
     grid-template-columns: 220px minmax(0, 1fr);
@@ -1446,6 +1489,10 @@ button.documentRow:hover {
   .referralCard,
   .authorityMatrix,
   .declarationGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .renewalCard {
     grid-template-columns: 1fr;
   }
 

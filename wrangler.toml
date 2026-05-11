@@ -1,0 +1,11 @@
+name = "photobind"
+compatibility_date = "2026-05-08"
+main = "workers/photobind.js"
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[vars]
+API_ORIGIN = "http://127.0.0.1:3000"

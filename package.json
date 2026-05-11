@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
-    "test": "vitest run"
+    "test": "vitest run",
+    "workers:preview": "npm run build && wrangler dev",
+    "workers:deploy": "npm run build && wrangler deploy"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^5.0.0",
@@ -17,6 +19,7 @@
     "lucide-react": "^0.468.0"
   },
   "devDependencies": {
-    "vitest": "^3.0.0"
+    "vitest": "^3.0.0",
+    "wrangler": "^4.14.0"
   }
 }

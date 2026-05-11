@@ -1,14 +1,18 @@
 module Api
   class SubmissionsController < ApplicationController
+    before_action :authorize_backoffice!, only: %i[index show]
+
     def index
       render json: Submission.order(created_at: :desc).includes(:business, :risk).as_json(include: %i[business risk])
     end
 
     def show
-      render json: submission.as_json(include: { business: { include: :locations }, risk: {}, quotes: { include: :quote_options }, underwriting_referrals: {}, policy: { include: %i[documents endorsements] } })
+      render json: submission.as_json(include: { business: { include: :locations }, risk: {}, quotes: { include: :quote_options }, underwriting_referrals: {}, underwriting_decisions: {}, policy: { include: %i[documents endorsements] } })
     end
 
     def create
+      raise ArgumentError, "Underwriter cannot create submissions" if current_user.underwriter?
+
       ActiveRecord::Base.transaction do
         organization = current_user.organization
         business = Business.create!(business_params)
@@ -30,11 +34,15 @@ module Api
     end
 
     def submit
+      raise ArgumentError, "Only agents and admins can submit backoffice submissions" unless %w[agent admin].include?(current_user.role)
+
       WorkflowTransition.apply!(submission, to: "submitted", user: current_user)
       render json: submission
     end
 
     def quote
+      raise ArgumentError, "Only agents and admins can request quotes" unless %w[agent admin applicant].include?(current_user.role)
+
       WorkflowTransition.apply!(submission, to: "submitted", user: current_user) if submission.status == "draft"
       quote = RatingEngine.quote!(submission)
       render json: quote ? quote.as_json(include: :quote_options) : submission.as_json(include: :underwriting_referrals)
@@ -44,6 +52,10 @@ module Api
 
     def submission
       @submission ||= Submission.find(params[:id])
+    end
+
+    def authorize_backoffice!
+      require_not_applicant!
     end
 
     def business_params

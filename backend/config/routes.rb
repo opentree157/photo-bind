@@ -1,5 +1,7 @@
 Rails.application.routes.draw do
   namespace :api do
+    resource :session, only: %i[create show], controller: :session
+
     resources :submissions, only: %i[create show index] do
       post :submit, on: :member
       post :quote, on: :member
@@ -8,6 +10,7 @@ Rails.application.routes.draw do
     resources :quotes, only: %i[show] do
       post :request_bind, on: :member
     end
+    resources :payment_intents, path: "payment-intents", only: %i[create]
 
     namespace :underwriting do
       resources :referrals, only: %i[index show] do
@@ -17,9 +20,18 @@ Rails.application.routes.draw do
     end
 
     resources :policies, only: %i[index show] do
-      resources :endorsements, only: %i[create]
+      resources :endorsements, only: %i[create] do
+        post :issue, on: :member
+      end
+      get "documents", to: "documents#index"
       get "documents/:document_id", to: "documents#show", as: :document
+      post "renewals", to: "renewals#create"
     end
+    resources :renewals, only: %i[index] do
+      post :request_bind, on: :member, action: :bind
+    end
+    resources :audit_events, path: "audit-events", only: %i[index]
+    resources :webhook_events, path: "webhook-events", only: %i[index]
 
     namespace :admin do
       resources :rating_tables, path: "rating-tables", only: %i[index create]

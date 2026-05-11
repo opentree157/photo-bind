@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_05_08_000100) do
+ActiveRecord::Schema[8.1].define(version: 2026_05_08_000200) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -62,12 +62,14 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_08_000100) do
   end
 
   create_table "endorsements", force: :cascade do |t|
+    t.integer "annual_delta_cents", default: 0, null: false
     t.jsonb "change_request", default: {}, null: false
     t.string "change_type", null: false
     t.datetime "created_at", null: false
     t.date "effective_date", null: false
     t.bigint "policy_id", null: false
     t.integer "premium_delta_cents", default: 0, null: false
+    t.decimal "proration_factor", precision: 10, scale: 6, default: "1.0", null: false
     t.string "status", default: "pending", null: false
     t.datetime "updated_at", null: false
     t.index ["policy_id"], name: "index_endorsements_on_policy_id"
@@ -104,15 +106,20 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_08_000100) do
 
   create_table "payments", force: :cascade do |t|
     t.integer "amount_cents", default: 0, null: false
+    t.datetime "authorized_at"
     t.datetime "created_at", null: false
+    t.string "idempotency_key"
+    t.jsonb "metadata", default: {}, null: false
     t.string "payment_intent_id", null: false
     t.bigint "policy_id"
     t.string "provider", default: "demo", null: false
     t.bigint "quote_id"
+    t.string "request_hash"
     t.string "status", default: "requires_confirmation", null: false
     t.datetime "updated_at", null: false
     t.index ["payment_intent_id"], name: "index_payments_on_payment_intent_id", unique: true
     t.index ["policy_id"], name: "index_payments_on_policy_id"
+    t.index ["quote_id", "idempotency_key"], name: "index_payments_on_quote_id_and_idempotency_key", unique: true, where: "(idempotency_key IS NOT NULL)"
     t.index ["quote_id"], name: "index_payments_on_quote_id"
   end
 
@@ -153,11 +160,15 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_08_000100) do
     t.jsonb "breakdown", default: {}, null: false
     t.datetime "created_at", null: false
     t.integer "deductible_cents", null: false
+    t.string "financial_version", default: "2026.05.01", null: false
     t.integer "limit_cents", null: false
     t.integer "policy_fee_cents", null: false
+    t.integer "premium_subtotal_cents", default: 0, null: false
     t.bigint "quote_id", null: false
     t.integer "stamping_fee_cents", null: false
+    t.integer "stamping_fee_rate_bps", default: 80, null: false
     t.integer "state_tax_cents", null: false
+    t.integer "tax_rate_bps", default: 300, null: false
     t.string "tier", null: false
     t.integer "total_due_cents", null: false
     t.datetime "updated_at", null: false
@@ -226,6 +237,28 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_08_000100) do
     t.index ["organization_id"], name: "index_submissions_on_organization_id"
     t.index ["status"], name: "index_submissions_on_status"
     t.index ["submission_number"], name: "index_submissions_on_submission_number", unique: true
+  end
+
+  create_table "underwriting_decisions", force: :cascade do |t|
+    t.string "action", null: false
+    t.datetime "created_at", null: false
+    t.datetime "decided_at", null: false
+    t.bigint "decided_by_id"
+    t.string "decision_type", null: false
+    t.jsonb "metadata", default: {}, null: false
+    t.string "outcome", null: false
+    t.bigint "quote_id"
+    t.text "reason", null: false
+    t.string "rule_code"
+    t.bigint "submission_id", null: false
+    t.bigint "underwriting_referral_id"
+    t.datetime "updated_at", null: false
+    t.index ["decided_by_id"], name: "index_underwriting_decisions_on_decided_by_id"
+    t.index ["quote_id"], name: "index_underwriting_decisions_on_quote_id"
+    t.index ["rule_code"], name: "index_underwriting_decisions_on_rule_code"
+    t.index ["submission_id", "decision_type"], name: "idx_on_submission_id_decision_type_d6eaf9469b"
+    t.index ["submission_id"], name: "index_underwriting_decisions_on_submission_id"
+    t.index ["underwriting_referral_id"], name: "index_underwriting_decisions_on_underwriting_referral_id"
   end
 
   create_table "underwriting_referrals", force: :cascade do |t|
@@ -302,6 +335,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_08_000100) do
   add_foreign_key "submissions", "businesses"
   add_foreign_key "submissions", "organizations"
   add_foreign_key "submissions", "users", column: "created_by_id"
+  add_foreign_key "underwriting_decisions", "quotes"
+  add_foreign_key "underwriting_decisions", "submissions"
+  add_foreign_key "underwriting_decisions", "underwriting_referrals"
+  add_foreign_key "underwriting_decisions", "users", column: "decided_by_id"
   add_foreign_key "underwriting_referrals", "quotes"
   add_foreign_key "underwriting_referrals", "submissions"
   add_foreign_key "underwriting_referrals", "users", column: "assigned_to_id"
