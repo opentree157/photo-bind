@@ -199,7 +199,9 @@ nav button:hover {
 
 .frontofficeShell {
   min-height: 100vh;
-  background: #f7f3ed;
+  background:
+    linear-gradient(180deg, rgba(246, 250, 247, 0.92), rgba(235, 241, 236, 0.96)),
+    #eef4ef;
 }
 
 .frontofficeTopbar {
@@ -209,9 +211,9 @@ nav button:hover {
   gap: 18px;
   min-height: 76px;
   padding: 16px 32px;
-  border-bottom: 1px solid #e1d8ce;
-  background: rgba(255, 252, 247, 0.94);
-  backdrop-filter: blur(14px);
+  border-bottom: 1px solid rgba(20, 55, 48, 0.12);
+  background: rgba(250, 252, 249, 0.86);
+  backdrop-filter: blur(18px);
   position: sticky;
   top: 0;
   z-index: 3;
@@ -236,41 +238,39 @@ nav button:hover {
 .frontofficeBrand span,
 .frontHero span,
 .frontTrustStrip span,
-.frontQuoteSummary span,
-.frontQuoteSummary small,
 .frontStatus span {
   color: #6c625a;
 }
 
 .frontofficeActions select {
   min-height: 42px;
-  border: 1px solid #d8cfc4;
+  border: 1px solid #c7d4ce;
   border-radius: 8px;
   padding: 0 12px;
-  background: #fffdfa;
+  background: #ffffff;
   color: #17211f;
 }
 
 .frontofficeMain {
   display: grid;
-  gap: 24px;
-  max-width: 1180px;
+  gap: 26px;
+  max-width: 1220px;
   margin: 0 auto;
-  padding: 30px;
+  padding: 34px 30px 44px;
 }
 
 .frontHero {
   display: grid;
-  grid-template-columns: minmax(0, 0.95fr) minmax(420px, 1.05fr);
+  grid-template-columns: minmax(0, 0.92fr) minmax(420px, 1.08fr);
   gap: 24px;
   align-items: stretch;
-  min-height: 430px;
-  padding: 20px 0 0;
+  min-height: 500px;
+  padding: 8px 0 0;
 }
 
 .frontHero p {
   margin: 0 0 8px;
-  color: #8a4a28;
+  color: #22614f;
   font-size: 12px;
   font-weight: 900;
   text-transform: uppercase;
@@ -279,50 +279,169 @@ nav button:hover {
 .frontHeroCopy {
   display: grid;
   align-content: center;
-  padding: 28px 0;
+  padding: 34px 0;
 }
 
 .frontHero h1 {
   max-width: 760px;
   margin: 0 0 12px;
-  font-size: 48px;
-  line-height: 1.02;
+  font-size: 54px;
+  line-height: 0.98;
+  letter-spacing: 0;
 }
 
-.frontHeroPhoto {
+.frontHeroCopy > span {
+  max-width: 620px;
+  font-size: 17px;
+  line-height: 1.55;
+}
+
+.frontHeroActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 24px;
+}
+
+.frontHeroMetrics {
   display: grid;
-  align-items: end;
-  min-height: 430px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 28px;
+}
+
+.frontHeroMetrics div {
+  display: grid;
+  gap: 3px;
+  min-height: 74px;
+  padding: 13px;
+  border: 1px solid rgba(20, 55, 48, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.66);
+}
+
+.frontHeroMetrics strong {
+  color: #143730;
+  font-size: 21px;
+}
+
+.frontHeroMetrics span {
+  color: #62736c;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.frontHeroGuide {
+  display: grid;
+  grid-template-rows: minmax(230px, 0.92fr) auto;
+  position: relative;
+  min-height: 500px;
   border-radius: 8px;
   overflow: hidden;
+  background: #ffffff;
+  box-shadow: 0 24px 70px rgba(18, 35, 31, 0.18);
+}
+
+.frontGuidePhoto {
+  min-height: 260px;
   background:
-    linear-gradient(180deg, rgba(18, 24, 22, 0.05), rgba(18, 24, 22, 0.78)),
-    url("https://images.unsplash.com/photo-1516035069371-29a1b244cc32?auto=format&fit=crop&w=1400&q=80");
+    linear-gradient(180deg, rgba(10, 18, 16, 0.02), rgba(10, 18, 16, 0.34)),
+    url("https://images.unsplash.com/photo-1516035069371-29a1b244cc32?auto=format&fit=crop&w=1600&q=82");
   background-position: center;
   background-size: cover;
 }
 
-.frontQuoteSummary {
+.frontGuideCard {
   display: grid;
+  gap: 14px;
+  padding: 24px;
+  border-top: 1px solid rgba(20, 55, 48, 0.1);
+  background: #ffffff;
+}
+
+.frontGuideCard p {
+  margin: 0;
+  color: #287e63;
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.frontGuideCard h2 {
+  max-width: 560px;
+  margin: 0;
+  color: #143730;
+  font-size: 26px;
+  line-height: 1.12;
+}
+
+.frontGuideList {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
-  margin: 20px;
-  padding: 20px;
-  border: 1px solid rgba(255, 255, 255, 0.24);
+}
+
+.frontGuideList span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 9px 10px;
+  border: 1px solid rgba(20, 55, 48, 0.1);
   border-radius: 8px;
-  background: rgba(16, 35, 31, 0.86);
+  background: #f5faf7;
+  color: #425750;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.frontCoverageStory {
+  display: grid;
+  grid-template-columns: 1.1fr 0.95fr 0.95fr;
+  gap: 12px;
+}
+
+.coverageTile {
+  display: grid;
+  align-content: end;
+  min-height: 190px;
+  padding: 18px;
+  border-radius: 8px;
+  overflow: hidden;
   color: #ffffff;
-  box-shadow: 0 18px 50px rgba(16, 35, 31, 0.28);
-  backdrop-filter: blur(10px);
+  background-position: center;
+  background-size: cover;
+  box-shadow: 0 16px 42px rgba(31, 48, 42, 0.14);
 }
 
-.frontQuoteSummary strong {
-  font-size: 38px;
-  color: #bff0b4;
+.coverageTile strong {
+  font-size: 24px;
 }
 
-.frontQuoteSummary span,
-.frontQuoteSummary small {
-  color: #dce9e4;
+.coverageTile span {
+  max-width: 320px;
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.coverageTile.studio {
+  background-image:
+    linear-gradient(180deg, rgba(16, 24, 22, 0.05), rgba(16, 24, 22, 0.76)),
+    url("https://images.unsplash.com/photo-1502982720700-bfff97f2ecac?auto=format&fit=crop&w=1200&q=82");
+}
+
+.coverageTile.event {
+  background-image:
+    linear-gradient(180deg, rgba(16, 24, 22, 0.05), rgba(16, 24, 22, 0.76)),
+    url("https://images.unsplash.com/photo-1519741497674-611481863552?auto=format&fit=crop&w=1200&q=82");
+}
+
+.coverageTile.location {
+  background-image:
+    linear-gradient(180deg, rgba(16, 24, 22, 0.05), rgba(16, 24, 22, 0.76)),
+    url("https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=1200&q=82");
 }
 
 .frontTrustStrip {
@@ -334,10 +453,11 @@ nav button:hover {
 .frontTrustStrip div {
   display: grid;
   gap: 5px;
-  padding: 16px;
-  border: 1px solid #e1d8ce;
+  padding: 18px;
+  border: 1px solid rgba(20, 55, 48, 0.12);
   border-radius: 8px;
-  background: #fffdfa;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 14px 38px rgba(37, 55, 49, 0.07);
 }
 
 .frontProgress {
@@ -352,17 +472,17 @@ nav button:hover {
   gap: 10px;
   min-height: 54px;
   padding: 10px 12px;
-  border: 1px solid #e1d8ce;
+  border: 1px solid rgba(20, 55, 48, 0.12);
   border-radius: 8px;
-  background: rgba(255, 253, 250, 0.76);
+  background: rgba(255, 255, 255, 0.66);
   color: #6c625a;
 }
 
 .frontProgress div.active {
-  border-color: #8a4a28;
-  background: #fffdfa;
+  border-color: #287e63;
+  background: #ffffff;
   color: #17211f;
-  box-shadow: 0 12px 34px rgba(63, 50, 38, 0.08);
+  box-shadow: 0 12px 34px rgba(39, 89, 72, 0.1);
 }
 
 .frontProgress span {
@@ -371,14 +491,14 @@ nav button:hover {
   width: 28px;
   height: 28px;
   border-radius: 999px;
-  background: #f0e3d7;
-  color: #8a4a28;
+  background: #dcefe5;
+  color: #287e63;
   font-size: 13px;
   font-weight: 900;
 }
 
 .frontProgress .active span {
-  background: #8a4a28;
+  background: #287e63;
   color: #ffffff;
 }
 
@@ -394,26 +514,27 @@ nav button:hover {
   align-items: start;
 }
 
-.frontQuoteLayout.singlePageFlow {
+.frontQuestionStage {
   grid-template-columns: minmax(0, 1fr);
+  align-items: start;
 }
 
-.frontQuoteLayout.singlePageFlow .quoteQuestionnaire {
+.frontQuestionStage .quoteQuestionnaire {
   max-width: 980px;
   margin: 0 auto;
 }
 
 .frontPanel {
-  border: 1px solid #e1d8ce;
+  border: 1px solid rgba(20, 55, 48, 0.12);
   border-radius: 8px;
-  background: #fffdfa;
-  padding: 18px;
-  box-shadow: 0 16px 40px rgba(63, 50, 38, 0.06);
+  background: rgba(255, 255, 255, 0.9);
+  padding: 22px;
+  box-shadow: 0 18px 50px rgba(37, 55, 49, 0.08);
 }
 
 .frontPanel h2 {
   margin: 0;
-  font-size: 18px;
+  font-size: 22px;
 }
 
 .quoteQuestionnaire {
@@ -423,7 +544,7 @@ nav button:hover {
 .questionGrid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 14px;
 }
 
 .questionField {
@@ -441,7 +562,7 @@ nav button:hover {
 .questionField select {
   width: 100%;
   min-height: 42px;
-  border: 1px solid #d8cfc4;
+  border: 1px solid #cbd9d2;
   border-radius: 8px;
   padding: 0 12px;
   background: #ffffff;
@@ -454,7 +575,7 @@ nav button:hover {
   grid-template-columns: 34px 1fr;
   align-items: center;
   min-height: 42px;
-  border: 1px solid #d8cfc4;
+  border: 1px solid #cbd9d2;
   border-radius: 8px;
   background: #ffffff;
   overflow: hidden;
@@ -464,8 +585,8 @@ nav button:hover {
   display: grid;
   place-items: center;
   align-self: stretch;
-  background: #f8efe6;
-  color: #8a4a28;
+  background: #eaf6ef;
+  color: #287e63;
   font-weight: 900;
 }
 
@@ -488,9 +609,9 @@ nav button:hover {
   gap: 9px;
   min-height: 44px;
   padding: 10px 12px;
-  border: 1px solid #e1d8ce;
+  border: 1px solid rgba(20, 55, 48, 0.12);
   border-radius: 8px;
-  background: #f8efe6;
+  background: #f5faf7;
   font-weight: 800;
 }
 
@@ -507,15 +628,18 @@ nav button:hover {
 
 .frontQuoteOptions {
   display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
 }
 
 .frontQuoteOptions button {
-  display: grid;
-  gap: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   width: 100%;
-  padding: 13px;
-  border: 1px solid #e1d8ce;
+  min-height: 240px;
+  padding: 16px;
+  border: 1px solid rgba(20, 55, 48, 0.12);
   border-radius: 8px;
   background: #ffffff;
   color: inherit;
@@ -523,34 +647,94 @@ nav button:hover {
 }
 
 .frontQuoteOptions button.selected {
-  border-color: #8a4a28;
-  box-shadow: 0 0 0 3px rgba(138, 74, 40, 0.16);
+  border-color: #287e63;
+  box-shadow: 0 0 0 3px rgba(40, 126, 99, 0.14), 0 18px 50px rgba(37, 55, 49, 0.13);
 }
 
 .frontQuoteOptions strong {
-  font-size: 24px;
+  font-size: 30px;
+}
+
+.frontQuoteOptions b {
+  align-self: flex-start;
+  min-height: 24px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: #143730;
+  color: #bff0b4;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.frontQuoteOptions em {
+  display: grid;
+  gap: 6px;
+  margin-top: auto;
+  font-style: normal;
+}
+
+.frontQuoteOptions i {
+  color: #566861;
+  font-size: 13px;
+  font-style: normal;
+}
+
+.frontQuoteOptions i::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 7px;
+  border-radius: 999px;
+  background: #287e63;
+}
+
+.quoteDetailStrip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.quoteDetailStrip div {
+  display: grid;
+  gap: 3px;
+  padding: 14px;
+  border: 1px solid rgba(20, 55, 48, 0.1);
+  border-radius: 8px;
+  background: #f5faf7;
+}
+
+.quoteDetailStrip span {
+  color: #62736c;
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.quoteDetailStrip strong {
+  font-size: 18px;
 }
 
 .frontLoadingPage,
 .frontResultPage {
   display: grid;
   place-items: center;
-  min-height: 520px;
+  min-height: 560px;
 }
 
 .loadingCard {
   display: grid;
   gap: 16px;
-  width: min(720px, 100%);
-  padding: 42px;
-  border: 1px solid #e1d8ce;
+  width: min(780px, 100%);
+  padding: 46px;
+  border: 1px solid rgba(20, 55, 48, 0.12);
   border-radius: 8px;
   background:
-    linear-gradient(135deg, rgba(255, 253, 250, 0.96), rgba(248, 239, 230, 0.94)),
-    url("https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=1200&q=80");
+    linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(234, 246, 239, 0.9)),
+    url("https://images.unsplash.com/photo-1519741497674-611481863552?auto=format&fit=crop&w=1400&q=82");
   background-position: center;
   background-size: cover;
-  box-shadow: 0 22px 60px rgba(63, 50, 38, 0.12);
+  box-shadow: 0 24px 70px rgba(37, 55, 49, 0.16);
   text-align: center;
 }
 
@@ -568,7 +752,7 @@ nav button:hover {
 
 .loadingCard p {
   margin: 0;
-  color: #8a4a28;
+  color: #287e63;
   font-size: 12px;
   font-weight: 900;
   text-transform: uppercase;
@@ -591,9 +775,9 @@ nav button:hover {
 
 .loadingSteps span {
   padding: 11px 12px;
-  border: 1px solid #e1d8ce;
+  border: 1px solid rgba(20, 55, 48, 0.12);
   border-radius: 8px;
-  background: rgba(255, 253, 250, 0.82);
+  background: rgba(255, 255, 255, 0.82);
 }
 
 .resultHeroPanel {
@@ -1505,6 +1689,10 @@ button.documentRow:hover {
   .frontHero,
   .frontofficeGrid,
   .frontQuoteLayout,
+  .frontCoverageStory,
+  .frontHeroMetrics,
+  .frontQuoteOptions,
+  .quoteDetailStrip,
   .questionGrid,
   .riskToggleGrid,
   .frontTrustStrip,
@@ -1523,12 +1711,20 @@ button.documentRow:hover {
   }
 
   .frontHero,
-  .frontHeroPhoto {
+  .frontHeroGuide {
     min-height: auto;
   }
 
-  .frontHeroPhoto {
+  .frontHeroGuide {
     min-height: 360px;
+  }
+
+  .frontGuideList {
+    grid-template-columns: 1fr;
+  }
+
+  .coverageTile {
+    min-height: 280px;
   }
 
   .content {

@@ -20,7 +20,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { auditEvents, policies, referrals, submissions, webhookEvents } from "./data";
-import { Policy, Role, Submission, buildQuote, canTransition, dollars, evaluateEligibility, rateSubmission, underwritingRules } from "./domain";
+import { Policy, Quote, Role, Submission, US_STATES, buildQuote, canTransition, dollars, evaluateEligibility, rateSubmission, underwritingRules } from "./domain";
 import {
   DocumentRecord,
   PlatformState,
@@ -28,7 +28,6 @@ import {
   apiEndpoints,
   approveReferralApi,
   bindRenewalQuoteApi,
-  bindSubmission,
   createAndQuoteSubmission,
   createEndorsementApi,
   createRenewalApi,
@@ -37,10 +36,9 @@ import {
   fetchPlatformState,
   fetchRatingTable,
   issueEndorsementApi,
-  quoteSubmission,
   requestBindApi,
   saveRatingFactor,
-  upsertSubmission
+  saveProductParameter
 } from "./platform";
 
 type View = "dashboard" | "submission" | "quotes" | "underwriting" | "policy" | "renewals" | "admin" | "analytics";
@@ -63,6 +61,20 @@ const roleCapabilities: Record<Role, string> = {
   admin: "Configure rates, rules, appetite, and forms.",
   applicant: "Use the public quote flow with internal actions hidden."
 };
+
+function latestRailsQuote(submission: Submission): Quote | undefined {
+  return submission.quotes?.slice(-1)[0];
+}
+
+function quoteForSubmission(submission: Submission): Quote {
+  return latestRailsQuote(submission) ?? buildQuote(submission);
+}
+
+function premiumForSubmission(submission: Submission) {
+  return latestRailsQuote(submission)?.options[1]?.breakdown.totalDue ??
+    latestRailsQuote(submission)?.options[0]?.breakdown.totalDue ??
+    rateSubmission(submission).totalDue;
+}
 
 function initialPlatformState(): PlatformState {
   const seededDocuments = policies.map((policy) => ({
@@ -100,7 +112,7 @@ export function App() {
   const [selectedQuoteOptionId, setSelectedQuoteOptionId] = useState("SUB-1007-OPT-2");
   const allSubmissions = platformState.submissions;
   const selectedSubmission = allSubmissions.find((submission) => submission.id === selectedSubmissionId) ?? allSubmissions[0];
-  const selectedQuote = useMemo(() => buildQuote(selectedSubmission), [selectedSubmission]);
+  const selectedQuote = useMemo(() => quoteForSubmission(selectedSubmission), [selectedSubmission]);
   const selectedOption = selectedQuote.options.find((option) => option.id === selectedQuoteOptionId) ?? selectedQuote.options[1];
 
   useEffect(() => {
@@ -115,7 +127,7 @@ export function App() {
         if (nextState.submissions.length > 0) {
           setPlatformState(nextState);
           setSelectedSubmissionId(nextState.submissions[0].id);
-          setSelectedQuoteOptionId(`${nextState.submissions[0].id}-OPT-2`);
+          setSelectedQuoteOptionId(latestRailsQuote(nextState.submissions[0])?.options[1]?.id ?? latestRailsQuote(nextState.submissions[0])?.options[0]?.id ?? `${nextState.submissions[0].id}-OPT-2`);
         }
         setApiStatus(`Rails API connected as ${session.user.role}`);
       } catch (error) {
@@ -133,42 +145,44 @@ export function App() {
     const nextState = await fetchPlatformState(token);
     if (nextState.submissions.length > 0) {
       setPlatformState(nextState);
-      setSelectedSubmissionId((current) => (nextState.submissions.some((item) => item.id === current) ? current : nextState.submissions[0].id));
+      setSelectedSubmissionId((current) => {
+        const selected = nextState.submissions.find((item) => item.id === current) ?? nextState.submissions[0];
+        setSelectedQuoteOptionId(latestRailsQuote(selected)?.options[1]?.id ?? latestRailsQuote(selected)?.options[0]?.id ?? `${selected.id}-OPT-2`);
+        return selected.id;
+      });
     }
   }
 
   async function upsertApplicantSubmission(submission: Submission) {
     if (!apiToken) {
-      setPlatformState((current) => upsertSubmission(current, submission, "Applicant"));
-      setSelectedSubmissionId(submission.id);
-      return;
+      throw new Error("Rails API is required for customer quotes");
     }
     try {
       const created = await createAndQuoteSubmission(submission, apiToken);
       await refreshFromRails();
       setSelectedSubmissionId(created.id);
       setApiStatus("Rails API saved and quoted applicant submission");
+      return created;
     } catch (error) {
       setApiStatus(`Rails API submission failed: ${error instanceof Error ? error.message : "unknown error"}`);
+      throw error;
     }
   }
 
-  async function requestBind(submissionId: string, optionId: string, actor: string) {
-    const idempotencyKey = `bind:${submissionId}:${optionId}`;
-    const submission = platformState.submissions.find((item) => item.id === submissionId);
-    const tier = buildQuote(submission ?? selectedSubmission).options.find((option) => option.id === optionId)?.tier ?? "Standard";
+  async function requestBind(submissionId: string, optionId: string, actor: string, submissionOverride?: Submission) {
+    const submission = submissionOverride ?? platformState.submissions.find((item) => item.id === submissionId);
     if (apiToken && submission) {
       try {
-        await requestBindApi(submission, tier, apiToken, actor.toLowerCase());
+        await requestBindApi(submission, optionId, apiToken, actor.toLowerCase());
         await refreshFromRails();
         setApiStatus("Rails API accepted bind request and queued document generation");
         return;
       } catch (error) {
         setApiStatus(`Rails API bind failed: ${error instanceof Error ? error.message : "unknown error"}`);
+        throw error;
       }
     }
-    setPlatformState((current) => bindSubmission(current, submissionId, optionId, actor, idempotencyKey));
-    setSelectedSubmissionId(submissionId);
+    throw new Error(`Rails API is required to bind ${submissionId} as ${actor}`);
   }
 
   function switchRole(nextRole: Role) {
@@ -181,7 +195,7 @@ export function App() {
       <FrontofficePortal
         onBackoffice={() => switchRole("agent")}
         onRoleChange={switchRole}
-        onBindRequest={(submissionId, optionId) => requestBind(submissionId, optionId, "Applicant")}
+        onBindRequest={(submissionId, optionId, submission) => requestBind(submissionId, optionId, "Applicant", submission)}
         onSubmissionChange={upsertApplicantSubmission}
         role={role}
       />
@@ -287,10 +301,10 @@ function FrontofficePortal({
   onSubmissionChange,
   role
 }: {
-  onBindRequest: (submissionId: string, optionId: string) => void | Promise<void>;
+  onBindRequest: (submissionId: string, optionId: string, submission?: Submission) => void | Promise<void>;
   onBackoffice: () => void;
   onRoleChange: (role: Role) => void;
-  onSubmissionChange: (submission: Submission) => void | Promise<void>;
+  onSubmissionChange: (submission: Submission) => Submission | void | Promise<Submission | void>;
   role: Role;
 }) {
   type FrontStep = "questions" | "loading" | "quotes" | "bind";
@@ -310,14 +324,17 @@ function FrontofficePortal({
     paymentIntent: "card"
   });
   const [frontStep, setFrontStep] = useState<FrontStep>("questions");
-  const [selectedOptionId, setSelectedOptionId] = useState("PUBLIC-QUOTE-OPT-2");
+  const [frontSubmission, setFrontSubmission] = useState<Submission | null>(null);
+  const [frontQuote, setFrontQuote] = useState<Quote | null>(null);
+  const [quoteError, setQuoteError] = useState("");
+  const [selectedOptionId, setSelectedOptionId] = useState("");
   const [bindRequested, setBindRequested] = useState(false);
 
   const publicSubmission: Submission = {
-    id: "PUBLIC-QUOTE",
+    id: "PUBLIC-DRAFT",
     agency: "Direct",
     producer: "Applicant portal",
-    status: "submitted",
+    status: "draft",
     business: {
       name: form.businessName,
       contact: form.businessName,
@@ -338,30 +355,69 @@ function FrontofficePortal({
       deductible: 1000
     },
     effectiveDate: form.effectiveDate,
-    createdAt: "2026-05-06T17:30:00Z",
-    ruleVersion: "UW-2026.05-v3",
-    ratingVersion: "RT-2026.05.01"
+    createdAt: new Date().toISOString(),
+    ruleVersion: "",
+    ratingVersion: ""
   };
-  const quote = buildQuote(publicSubmission);
-  const triggers = evaluateEligibility(publicSubmission);
-  const declineTriggers = triggers.filter((trigger) => trigger.action === "decline");
-  const referTriggers = triggers.filter((trigger) => trigger.action === "refer");
-  const selectedOption = quote.options.find((option) => option.id === selectedOptionId) ?? quote.options[1];
-  const quotedStatus: Submission["status"] = declineTriggers.length > 0 ? "ineligible" : referTriggers.length > 0 ? "referred" : "quoted";
+  const quoteOptions = frontQuote?.options ?? [];
+  const selectedOption = quoteOptions.find((option) => option.id === selectedOptionId) ?? quoteOptions[1] ?? quoteOptions[0];
+  const isDeclined = frontSubmission?.status === "ineligible";
+  const isReferred = frontSubmission?.status === "referred" || frontQuote?.status === "referred";
+  const isBindable = Boolean(frontSubmission && frontQuote && selectedOption && !isDeclined && !isReferred);
+  const selectedOptionIndex = quoteOptions.findIndex((option) => option.id === selectedOption?.id);
+  const quoteHighlights: Record<string, string[]> = {
+    Basic: ["Good for lower-volume studio work", "Certificates when a client asks", "$2,500 deductible"],
+    Standard: ["Built for event and location work", "Equipment-related protection", "Balanced deductible"],
+    Premium: ["Higher limit for larger jobs", "Extra flexibility for venues", "Support for shoots away from home"]
+  };
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }, []);
+
+  useEffect(() => {
+    if (frontStep !== "questions") window.scrollTo({ top: 0, behavior: "smooth" });
+  }, [frontStep]);
+
+  function scrollToQuestions() {
+    setFrontStep("questions");
+    window.requestAnimationFrame(() => {
+      document.getElementById("front-questions")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
 
   function updateField(name: keyof typeof form, value: string | boolean) {
     setForm((current) => ({ ...current, [name]: value }));
     if (name !== "signatureName" && name !== "paymentIntent") {
       setFrontStep("questions");
       setBindRequested(false);
+      setFrontSubmission(null);
+      setFrontQuote(null);
+      setSelectedOptionId("");
+      setQuoteError("");
     }
   }
 
-  function submitQuote() {
-    void onSubmissionChange(quoteSubmission({ ...publicSubmission, status: "draft" }));
+  async function submitQuote() {
     setFrontStep("loading");
     setBindRequested(false);
-    window.setTimeout(() => setFrontStep("quotes"), 5000);
+    setQuoteError("");
+    setFrontSubmission(null);
+    setFrontQuote(null);
+    const delay = new Promise((resolve) => window.setTimeout(resolve, 5000));
+    try {
+      const [created] = await Promise.all([onSubmissionChange(publicSubmission), delay]);
+      const saved = created ?? null;
+      const savedQuote = saved?.quotes?.slice(-1)[0] ?? null;
+      setFrontSubmission(saved);
+      setFrontQuote(savedQuote);
+      setSelectedOptionId(savedQuote?.options[1]?.id ?? savedQuote?.options[0]?.id ?? "");
+    } catch (error) {
+      await delay;
+      setQuoteError(error instanceof Error ? error.message : "Quote request failed");
+    } finally {
+      setFrontStep("quotes");
+    }
   }
 
   return (
@@ -381,32 +437,73 @@ function FrontofficePortal({
             <option value="underwriter">Underwriter</option>
             <option value="admin">Admin/Product</option>
           </select>
-          <button className="secondaryButton" type="button" onClick={onBackoffice}>Backoffice</button>
+          <button className="secondaryButton" type="button" onClick={onBackoffice}>Agent workspace</button>
         </div>
       </header>
 
       <main className="frontofficeMain">
         <section className="frontHero">
           <div className="frontHeroCopy">
-            <p>Customer quote flow</p>
+            <p>Photographer general liability</p>
             <h1>Coverage for photographers who work on location, in studio, and at events</h1>
-            <span>Answer a few business questions, see your options, and request bind when you are ready.</span>
-          </div>
-          <div className="frontHeroPhoto" aria-label="Photographer preparing a client shoot">
-            <div className="frontQuoteSummary">
-              <Camera size={24} />
-              <span>{frontStep === "quotes" || frontStep === "bind" ? "Selected annual due" : "Quote not submitted"}</span>
-              <strong>{frontStep === "quotes" || frontStep === "bind" ? dollars(selectedOption.breakdown.totalDue) : "--"}</strong>
-              <small>{frontStep === "quotes" || frontStep === "bind" ? `${selectedOption.tier} / ${selectedOption.limit}` : "Complete the questions below"}</small>
+            <span>Tell us how you work, compare clear coverage options, and choose a plan that helps protect your business.</span>
+            <div className="frontHeroActions">
+              <button className="primaryButton" type="button" onClick={scrollToQuestions}>
+                Start quote
+                <ArrowRight size={18} />
+              </button>
+              <button className="secondaryButton" type="button" onClick={onBackoffice}>Agent workspace</button>
             </div>
+            <div className="frontHeroMetrics">
+              <div>
+                <strong>50</strong>
+                <span>states screened</span>
+              </div>
+              <div>
+                <strong>3</strong>
+                <span>quote packages</span>
+              </div>
+              <div>
+                <strong>Today</strong>
+                <span>prices returned live</span>
+              </div>
+            </div>
+          </div>
+          <div className="frontHeroGuide" aria-label="What PhotoBind helps with">
+            <div className="frontGuidePhoto" />
+            <div className="frontGuideCard">
+              <p>What you can sort out here</p>
+              <h2>Coverage that helps when clients, venues, or contracts ask for proof of insurance.</h2>
+              <div className="frontGuideList">
+                <span><Check size={16} /> Compare three coverage levels</span>
+                <span><Check size={16} /> See your estimated annual cost</span>
+                <span><Check size={16} /> Choose a start date for coverage</span>
+                <span><Check size={16} /> Save your selection for purchase</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="frontCoverageStory" aria-label="Coverage for different photography work">
+          <div className="coverageTile studio">
+            <strong>Studio shoots</strong>
+            <span>For portrait sessions, rented studio time, and clients visiting your workspace.</span>
+          </div>
+          <div className="coverageTile event">
+            <strong>Events and venues</strong>
+            <span>For weddings, school shoots, and venues that ask for certificates before the day starts.</span>
+          </div>
+          <div className="coverageTile location">
+            <strong>On-location work</strong>
+            <span>For client sites, parks, rentals, and the places your camera takes you.</span>
           </div>
         </section>
 
         <section className="frontProgress">
           {[
             ["questions", "Questions"],
-            ["quotes", "Quote results"],
-            ["bind", "Purchase and bind"]
+            ["quotes", "Compare options"],
+            ["bind", "Checkout"]
           ].map(([step, label], index) => (
             <div className={frontStep === step || (frontStep === "loading" && step === "quotes") ? "active" : ""} key={step}>
               <span>{index + 1}</span>
@@ -417,21 +514,21 @@ function FrontofficePortal({
 
         <section className="frontTrustStrip">
           <div>
-            <strong>Fast appetite check</strong>
-            <span>State, claims, drones, and pyrotechnics are screened before quote.</span>
+            <strong>Know where you stand</strong>
+            <span>We check the details that can affect whether coverage is available.</span>
           </div>
           <div>
-            <strong>Bindable options</strong>
-            <span>Basic, Standard, and Premium packages use the same rating engine as backoffice.</span>
+            <strong>Choose your fit</strong>
+            <span>Compare Basic, Standard, and Premium without decoding insurance jargon.</span>
           </div>
           <div>
-            <strong>Clean handoff</strong>
-            <span>Purchase creates a bind request for issuance and policy documents.</span>
+            <strong>Be ready for clients</strong>
+            <span>Get coverage details you can use when a venue or client asks.</span>
           </div>
         </section>
 
         {frontStep === "questions" && (
-        <section className="frontQuoteLayout singlePageFlow">
+        <section className="frontQuoteLayout frontQuestionStage" id="front-questions">
           <form
             className="frontPanel quoteQuestionnaire"
             onSubmit={(event: { preventDefault: () => void }) => {
@@ -455,7 +552,7 @@ function FrontofficePortal({
               <label className="questionField">
                 <span>What state is your business based in?</span>
                 <select value={form.state} onChange={(event: { target: { value: string } }) => updateField("state", event.target.value)}>
-                  {["MA", "CT", "RI", "NH", "NY", "VT"].map((state) => (
+                  {US_STATES.map((state) => (
                     <option key={state} value={state}>{state}</option>
                   ))}
                 </select>
@@ -527,11 +624,11 @@ function FrontofficePortal({
                 <Camera size={30} />
               </div>
               <p>Building your quote</p>
-              <h2>Checking appetite, rating factors, and bind eligibility</h2>
+              <h2>Finding coverage options that fit your photography business</h2>
               <div className="loadingSteps">
-                <span>Verifying state availability</span>
-                <span>Reviewing claims and business exposures</span>
-                <span>Calculating Basic, Standard, and Premium options</span>
+                <span>Checking where your business is based</span>
+                <span>Reviewing your work and claims history</span>
+                <span>Preparing Basic, Standard, and Premium prices</span>
               </div>
             </div>
           </section>
@@ -545,47 +642,68 @@ function FrontofficePortal({
               <span>Step 2</span>
             </div>
 
-            {declineTriggers.length > 0 ? (
-              <div className="ruleList">
-                {declineTriggers.map((trigger) => (
-                  <div className="ruleItem decline" key={trigger.code}>
-                    <AlertTriangle size={18} />
-                    <span>
-                      <strong>{trigger.code}</strong>
-                      <small>{trigger.label}</small>
-                    </span>
-                    <b>decline</b>
-                  </div>
-                ))}
+            {quoteError ? (
+              <div className="frontStatus muted">
+                <AlertTriangle size={22} />
+                <strong>Quote request did not complete</strong>
+                <span>{quoteError}</span>
+              </div>
+            ) : isDeclined ? (
+              <div className="frontStatus muted">
+                <AlertTriangle size={22} />
+                <strong>We cannot offer coverage online</strong>
+                <span>Based on your answers, this business needs a different coverage path than the one offered here.</span>
               </div>
             ) : (
               <>
                 <div className="frontStatus">
-                  {referTriggers.length > 0 ? <AlertTriangle size={22} /> : <ShieldCheck size={22} />}
-                  <strong>{referTriggers.length > 0 ? "Quote available with underwriter review" : "Eligible for instant quote"}</strong>
+                  {isReferred ? <AlertTriangle size={22} /> : <ShieldCheck size={22} />}
+                  <strong>{isReferred ? "This needs a closer look" : "Your options are ready"}</strong>
                   <span>
-                    {referTriggers.length > 0
-                      ? referTriggers.map((trigger) => trigger.code).join(", ")
-                      : "No referral or decline rules triggered."}
+                    {isReferred
+                      ? "Some details need review before you can purchase online. We saved your answers so the next step is easy."
+                      : "Choose the package that matches how much protection you want for your work."}
                   </span>
                 </div>
                 <div className="frontQuoteOptions">
-                  {quote.options.map((option) => (
+                  {quoteOptions.map((option, index) => (
                     <button
-                      className={selectedOption.id === option.id ? "selected" : ""}
+                      className={selectedOption?.id === option.id ? "selected" : ""}
                       key={option.id}
                       type="button"
                       onClick={() => setSelectedOptionId(option.id)}
                     >
                       <span>{option.tier}</span>
+                      {index === 1 && <b>Most selected</b>}
                       <strong>{dollars(option.breakdown.totalDue)}</strong>
                       <small>{option.limit} / {dollars(option.deductible)} deductible</small>
+                      <em>
+                        {(quoteHighlights[option.tier] ?? []).map((highlight) => (
+                          <i key={highlight}>{highlight}</i>
+                        ))}
+                      </em>
                     </button>
                   ))}
                 </div>
+                {selectedOption && (
+                  <div className="quoteDetailStrip">
+                    <div>
+                      <span>Selected package</span>
+                      <strong>{selectedOption.tier}</strong>
+                    </div>
+                    <div>
+                      <span>Annual due</span>
+                      <strong>{dollars(selectedOption.breakdown.totalDue)}</strong>
+                    </div>
+                    <div>
+                      <span>Package position</span>
+                      <strong>Option {selectedOptionIndex + 1} of {quoteOptions.length}</strong>
+                    </div>
+                  </div>
+                )}
                 <div className="frontPageActions">
                   <button className="secondaryButton" type="button" onClick={() => setFrontStep("questions")}>Edit answers</button>
-                  <button className="primaryButton" type="button" onClick={() => setFrontStep("bind")}>
+                  <button className="primaryButton" disabled={!isBindable} type="button" onClick={() => setFrontStep("bind")}>
                     Continue to purchase
                     <ArrowRight size={18} />
                   </button>
@@ -600,38 +718,43 @@ function FrontofficePortal({
           <section className="frontResultPage">
           <div className="frontPanel bindPanel">
             <div className="panelHeader">
-              <h2>Purchase and bind</h2>
+              <h2>Review and purchase</h2>
               <span>Step 3</span>
             </div>
-            {declineTriggers.length > 0 ? (
+            {!isBindable || !frontSubmission || !selectedOption ? (
               <div className="frontStatus muted">
                 <LockKeyhole size={22} />
-                <strong>Bind unavailable</strong>
-                <span>Submit an eligible quote before purchase.</span>
+                <strong>Purchase is not available yet</strong>
+                <span>{isReferred ? "A coverage specialist needs to review this before you can continue." : "Get an eligible quote before checkout."}</span>
               </div>
             ) : bindRequested ? (
               <div className="frontStatus">
                 <ShieldCheck size={22} />
-                <strong>Bind request received</strong>
-                <span>Policy issuance and declaration documents are queued for the backoffice.</span>
+                <strong>Your purchase request is in</strong>
+                <span>We received your selection and are preparing your coverage documents.</span>
               </div>
             ) : (
               <>
                 <div className="bindSummary">
                   <span>Selected option</span>
                   <strong>{selectedOption.tier} / {dollars(selectedOption.breakdown.totalDue)}</strong>
-                  <small>{publicSubmission.effectiveDate} effective date</small>
+                  <small>{frontSubmission.effectiveDate} effective date</small>
+                </div>
+                <div className="bindChecklist">
+                  <p><Check size={16} /> Your selected package is saved</p>
+                  <p><Check size={16} /> Your payment preference is recorded</p>
+                  <p><Check size={16} /> Coverage documents will be prepared after purchase</p>
                 </div>
                 <label className="questionField">
                   <span>Signature name</span>
                   <input value={form.signatureName} onChange={(event: { target: { value: string } }) => updateField("signatureName", event.target.value)} />
                 </label>
                 <label className="questionField">
-                  <span>Payment intent</span>
+                  <span>How would you like to pay?</span>
                   <select value={form.paymentIntent} onChange={(event: { target: { value: string } }) => updateField("paymentIntent", event.target.value)}>
-                    <option value="card">Card ending later</option>
+                    <option value="card">Card</option>
                     <option value="ach">ACH authorization</option>
-                    <option value="invoice">Invoice me</option>
+                    <option value="invoice">Invoice</option>
                   </select>
                 </label>
                 <button
@@ -639,12 +762,12 @@ function FrontofficePortal({
                   disabled={form.signatureName.trim().length === 0}
                   type="button"
                   onClick={() => {
-                    void onSubmissionChange({ ...publicSubmission, status: quotedStatus, selectedQuoteOptionId: selectedOption.id });
-                    void onBindRequest(publicSubmission.id, selectedOption.id);
-                    setBindRequested(true);
+                    void Promise.resolve(onBindRequest(frontSubmission.id, selectedOption.id, frontSubmission))
+                      .then(() => setBindRequested(true))
+                      .catch((error: unknown) => setQuoteError(error instanceof Error ? error.message : "Purchase request failed"));
                   }}
                 >
-                  Purchase and request bind
+                  Request purchase
                   <LockKeyhole size={18} />
                 </button>
                 <button className="secondaryButton" type="button" onClick={() => setFrontStep("quotes")}>Back to quote options</button>
@@ -707,7 +830,7 @@ function Dashboard({
   const openCount = submissions.filter((submission) => !["issued", "cancelled", "declined", "ineligible"].includes(submission.status)).length;
   const referralRate = Math.round((submissions.filter((submission) => submission.status === "referred").length / submissions.length) * 100);
   const quoteToBind = Math.round((policyCount / Math.max(submissions.length, 1)) * 100);
-  const averagePremium = Math.round(submissions.reduce((sum, submission) => sum + rateSubmission(submission).totalDue, 0) / submissions.length);
+  const averagePremium = Math.round(submissions.reduce((sum, submission) => sum + premiumForSubmission(submission), 0) / submissions.length);
 
   return (
     <div className="content">
@@ -768,7 +891,7 @@ function Dashboard({
                   <small>{submission.id} / {submission.producer}</small>
                 </span>
                 <StatusPill status={submission.status} />
-                <b>{dollars(rateSubmission(submission).totalDue)}</b>
+                <b>{dollars(premiumForSubmission(submission))}</b>
               </button>
             ))}
           </div>
@@ -780,7 +903,7 @@ function Dashboard({
 
 function SubmissionWizard({ role, submission }: { role: Role; submission: Submission }) {
   const triggers = evaluateEligibility(submission);
-  const quote = buildQuote(submission);
+  const quote = quoteForSubmission(submission);
   const [submitted, setSubmitted] = useState(false);
 
   return (
@@ -887,7 +1010,7 @@ function QuoteCompare({
   onBindRequest: (optionId: string) => void | Promise<void>;
   role: Role;
   submission: Submission;
-  quote: ReturnType<typeof buildQuote>;
+  quote: Quote;
   selectedOptionId: string;
   setSelectedOptionId: (id: string) => void;
 }) {
@@ -1220,7 +1343,7 @@ function PolicyDetail({
               <label className="questionField">
                 <span>New rating state</span>
                 <select value={endorsementState} onChange={(event: { target: { value: string } }) => setEndorsementState(event.target.value)}>
-                  {["MA", "CT", "RI", "NH"].map((state) => <option key={state} value={state}>{state}</option>)}
+                  {US_STATES.map((state) => <option key={state} value={state}>{state}</option>)}
                 </select>
               </label>
             )}
@@ -1514,12 +1637,17 @@ function AdminEditor({
 }) {
   const [published, setPublished] = useState(false);
   const [ratingRows, setRatingRows] = useState<Array<Record<string, string>>>([]);
+  const [parameterRows, setParameterRows] = useState<Array<Record<string, string>>>([]);
   const [factorDraft, setFactorDraft] = useState({
     state: "MA",
     class_code: "PHOTO_GL",
     factor_type: "territory",
     band: "default",
     factor: "1.10"
+  });
+  const [parameterDraft, setParameterDraft] = useState({
+    key: "financial.policy_fee",
+    value: "75"
   });
 
   useEffect(() => {
@@ -1532,6 +1660,11 @@ function AdminEditor({
         band: factor.band,
         factor: String(factor.factor),
         active: factor.active ? "active" : "inactive"
+      })));
+      setParameterRows((table.product_parameters ?? []).slice(0, 12).map((parameter: any) => ({
+        key: parameter.key,
+        value: String(parameter.value),
+        active: parameter.active ? "active" : "inactive"
       })));
     });
   }, [role, token, published]);
@@ -1596,6 +1729,67 @@ function AdminEditor({
                 <span>{row.factor_type}</span>
                 <span>{row.band}</span>
                 <span>{row.factor}</span>
+                <span>{row.active}</span>
+              </div>
+            ))}
+          </div>
+          <div className="panelHeader compactHeader">
+            <h3>Product Parameters</h3>
+            <span>Fees, taxes, options</span>
+          </div>
+          <div className="factorEditor twoColumnEditor">
+            <label className="questionField">
+              <span>Parameter key</span>
+              <select value={parameterDraft.key} onChange={(event: { target: { value: string } }) => setParameterDraft((current) => ({ ...current, key: event.target.value }))}>
+                {[
+                  "rating.base_rate",
+                  "rating.claims_surcharge_per_claim",
+                  "rating.event_work_surcharge",
+                  "financial.policy_fee",
+                  "financial.state_tax_bps",
+                  "financial.stamping_fee_bps",
+                  "option.basic.limit",
+                  "option.basic.deductible",
+                  "option.basic.limit_factor",
+                  "option.basic.deductible_factor",
+                  "option.standard.limit",
+                  "option.standard.deductible",
+                  "option.standard.limit_factor",
+                  "option.standard.deductible_factor",
+                  "option.premium.limit",
+                  "option.premium.deductible",
+                  "option.premium.limit_factor",
+                  "option.premium.deductible_factor"
+                ].map((key) => <option key={key} value={key}>{key}</option>)}
+              </select>
+            </label>
+            <label className="questionField">
+              <span>Value</span>
+              <input value={parameterDraft.value} onChange={(event: { target: { value: string } }) => setParameterDraft((current) => ({ ...current, value: event.target.value }))} />
+            </label>
+          </div>
+          <button
+            className="secondaryButton"
+            disabled={role !== "admin" || !token}
+            type="button"
+            onClick={async () => {
+              await saveProductParameter(token, {
+                version: "2026.05.01",
+                key: parameterDraft.key,
+                value: Number(parameterDraft.value),
+                active: true
+              });
+              setPublished(true);
+              await onChanged();
+            }}
+          >
+            Save product parameter
+          </button>
+          <div className="factorTable parameterTable">
+            {parameterRows.map((row) => (
+              <div key={row.key}>
+                <span>{row.key}</span>
+                <span>{row.value}</span>
                 <span>{row.active}</span>
               </div>
             ))}
@@ -1682,7 +1876,7 @@ function Analytics({
 }) {
   const quoteToBind = Math.round((policyCount / Math.max(submissions.length, 1)) * 100);
   const referralRate = Math.round((submissions.filter((submission) => submission.status === "referred").length / Math.max(submissions.length, 1)) * 100);
-  const portfolioPremium = submissions.reduce((sum, submission) => sum + rateSubmission(submission).totalDue, 0);
+  const portfolioPremium = submissions.reduce((sum, submission) => sum + premiumForSubmission(submission), 0);
   const classMix = ["PHOTO-PORTRAIT", "PHOTO-WEDDING", "PHOTO-STUDIO", "PHOTO-DRONE"].map((classCode) => {
     const count = submissions.filter((submission) => submission.risk.classCode === classCode).length;
     return [labelize(classCode.replace("PHOTO-", "")), Math.round((count / Math.max(submissions.length, 1)) * 100)] as const;

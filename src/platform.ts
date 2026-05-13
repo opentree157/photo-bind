@@ -1,6 +1,7 @@
 import {
   AuditEvent,
   Policy,
+  Quote,
   QuoteOption,
   RatingBreakdown,
   Risk,
@@ -99,13 +100,32 @@ export async function createAndQuoteSubmission(submission: Submission, token: st
     method: "POST",
     body: JSON.stringify(toSubmissionPayload(submission))
   }, token);
-  const quote = await request(`/api/submissions/${created.id}/quote`, { method: "POST" }, token);
-  return mapSubmission(quote.submission ?? { ...created, status: quote.status === "referred" ? "referred" : "quoted", quotes: [quote] });
+  const quoted = await request(`/api/submissions/${created.id}/quote`, { method: "POST" }, token);
+  if (quoted.quote_options) {
+    return mapSubmission({
+      ...created,
+      status: quoted.status === "referred" ? "referred" : "quoted",
+      quotes: [quoted]
+    });
+  }
+  return mapSubmission({
+    ...created,
+    status: quoted.status ?? created.status,
+    underwriting_referrals: quoted.underwriting_referrals ?? []
+  });
 }
 
-export async function requestBindApi(submission: Submission, tier: string, token: string, paymentIntent = "demo-card"): Promise<void> {
-  const quote = await request(`/api/submissions/${submission.id}/quote`, { method: "POST" }, token);
-  const option = (quote.quote_options ?? []).find((item: any) => item.tier === tier) ?? quote.quote_options?.[0];
+export async function requestBindApi(submission: Submission, quoteOptionIdOrTier: string, token: string, paymentIntent = "demo-card"): Promise<void> {
+  const details = await request(`/api/submissions/${submission.id}`, {}, token);
+  const quotes = details.quotes ?? submission.quotes ?? [];
+  let quote = [...quotes].reverse().find((item: any) => ["quoted", "active"].includes(item.status)) ?? quotes[quotes.length - 1];
+  if (!quote) {
+    quote = await request(`/api/submissions/${submission.id}/quote`, { method: "POST" }, token);
+  }
+  if (!quote?.quote_options?.length) throw new Error("No bindable quote returned from Rails");
+  const option = quote.quote_options.find((item: any) => String(item.id) === String(quoteOptionIdOrTier)) ??
+    quote.quote_options.find((item: any) => item.tier === quoteOptionIdOrTier) ??
+    quote.quote_options[0];
   if (!option) throw new Error("No quote option returned from Rails");
   const intent = await createPaymentIntentApi(Number(quote.id), Number(option.id), token, `payment:${quote.id}:${option.id}`);
   await request(`/api/quotes/${quote.id}/request_bind`, {
@@ -149,6 +169,13 @@ export async function saveRatingFactor(token: string, factor: Record<string, str
   return request("/api/admin/rating-tables", {
     method: "POST",
     body: JSON.stringify({ rating_factor: factor })
+  }, token);
+}
+
+export async function saveProductParameter(token: string, parameter: Record<string, string | number | boolean>) {
+  return request("/api/admin/rating-tables", {
+    method: "POST",
+    body: JSON.stringify({ product_parameter: parameter })
   }, token);
 }
 
@@ -202,6 +229,8 @@ function mapSubmission(item: any): Submission {
   const business = item.business ?? {};
   const risk = item.risk ?? {};
   const location = business.locations?.[0] ?? {};
+  const quotes = (item.quotes ?? []).map(mapQuote);
+  const latestQuote = quotes[quotes.length - 1];
   return {
     id: String(item.id),
     agency: item.agency?.name ?? "Northlight Agency",
@@ -228,8 +257,38 @@ function mapSubmission(item: any): Submission {
     },
     effectiveDate: item.effective_date ?? new Date().toISOString().slice(0, 10),
     createdAt: item.created_at ?? new Date().toISOString(),
-    ruleVersion: item.quotes?.[0]?.rules_version ?? "v3",
-    ratingVersion: item.quotes?.[0]?.rating_version ?? "2026.05.01"
+    ruleVersion: latestQuote?.ruleVersion ?? item.quotes?.[0]?.rules_version ?? "v3",
+    ratingVersion: latestQuote?.ratingVersion ?? item.quotes?.[0]?.rating_version ?? "2026.05.01",
+    selectedQuoteOptionId: latestQuote?.options[1]?.id ?? latestQuote?.options[0]?.id,
+    quotes
+  };
+}
+
+function mapQuote(item: any): Quote {
+  const options = (item.quote_options ?? []).map(mapQuoteOption);
+  return {
+    id: String(item.id),
+    submissionId: String(item.submission_id),
+    status: item.status === "quoted" ? "quoted" : item.status === "referred" ? "referred" : "active",
+    createdAt: item.created_at ?? new Date().toISOString(),
+    ratingVersion: item.rating_version ?? "2026.05.01",
+    ruleVersion: item.rules_version ?? "v3",
+    options
+  };
+}
+
+function mapQuoteOption(option: any): QuoteOption {
+  return {
+    id: String(option.id),
+    tier: option.tier ?? "Standard",
+    limit: `$${centsToDollars(option.limit_cents).toLocaleString()} occurrence`,
+    deductible: centsToDollars(option.deductible_cents) as QuoteOption["deductible"],
+    endorsements: option.tier === "Premium"
+      ? ["General liability", "Additional insured blanket", "Worldwide shoots", "Hired equipment"]
+      : option.tier === "Standard"
+        ? ["General liability", "Professional liability sublimit", "Hired equipment"]
+        : ["General liability", "Damage to rented premises"],
+    breakdown: mapBreakdown(option.breakdown ?? {}, option)
   };
 }
 
@@ -237,14 +296,7 @@ function mapPolicy(item: any): Policy {
   const snapshot = item.policy_snapshot ?? {};
   const mappedSubmission = snapshot.submission ? mapSubmission(snapshot.submission) : mapSubmission(item.submission ?? {});
   const option = item.quote_option ?? snapshot.selected_option ?? {};
-  const quoteOption: QuoteOption = {
-    id: String(option.id ?? `${mappedSubmission.id}-OPT-1`),
-    tier: option.tier ?? "Standard",
-    limit: `$${centsToDollars(option.limit_cents).toLocaleString()} occurrence`,
-    deductible: centsToDollars(option.deductible_cents) as QuoteOption["deductible"],
-    endorsements: option.tier === "Premium" ? ["General liability", "Additional insured blanket", "Worldwide shoots"] : ["General liability"],
-    breakdown: mapBreakdown(option.breakdown ?? {})
-  };
+  const quoteOption: QuoteOption = mapQuoteOption({ id: `${mappedSubmission.id}-OPT-1`, tier: "Standard", ...option });
   return {
     id: String(item.id),
     policyNumber: item.policy_number,
@@ -266,7 +318,7 @@ function mapPolicy(item: any): Policy {
   } as Policy & { endorsements: any[] };
 }
 
-function mapBreakdown(breakdown: any): RatingBreakdown {
+function mapBreakdown(breakdown: any, option: any = {}): RatingBreakdown {
   return {
     baseRate: Number(breakdown.base_rate ?? breakdown.baseRate ?? 0),
     classFactor: Number(breakdown.class_factor ?? breakdown.classFactor ?? 1),
@@ -275,11 +327,11 @@ function mapBreakdown(breakdown: any): RatingBreakdown {
     claimsFactor: Number(breakdown.claims_factor ?? breakdown.claimsFactor ?? 1),
     limitFactor: Number(breakdown.limit_factor ?? breakdown.limitFactor ?? 1),
     deductibleFactor: Number(breakdown.deductible_factor ?? breakdown.deductibleFactor ?? 1),
-    annualPremium: Number(breakdown.annual_premium ?? breakdown.annualPremium ?? 0),
-    policyFee: Number(breakdown.policy_fee ?? breakdown.policyFee ?? 75),
-    stateTax: Number(breakdown.state_tax ?? breakdown.stateTax ?? 0),
-    stampingFee: Number(breakdown.stamping_fee ?? breakdown.stampingFee ?? 0),
-    totalDue: Number(breakdown.total_due ?? breakdown.totalDue ?? 0)
+    annualPremium: Number(breakdown.annual_premium ?? breakdown.annualPremium ?? centsToDollars(option.annual_premium_cents)),
+    policyFee: Number(breakdown.policy_fee ?? breakdown.policyFee ?? centsToDollars(option.policy_fee_cents)),
+    stateTax: Number(breakdown.state_tax ?? breakdown.stateTax ?? centsToDollars(option.state_tax_cents)),
+    stampingFee: Number(breakdown.stamping_fee ?? breakdown.stampingFee ?? centsToDollars(option.stamping_fee_cents)),
+    totalDue: Number(breakdown.total_due ?? breakdown.totalDue ?? centsToDollars(option.total_due_cents))
   };
 }
 

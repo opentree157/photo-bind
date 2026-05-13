@@ -1,25 +1,25 @@
 class Financials
-  VERSION = "2026.05.01"
-  POLICY_FEE_CENTS = 75_00
-  STATE_TAX_BPS = 300
-  STAMPING_FEE_BPS = 80
+  VERSION = ProductConfig::VERSION
 
-  def self.quote_totals(annual_premium_cents)
-    state_tax_cents = bps(annual_premium_cents, STATE_TAX_BPS)
-    stamping_fee_cents = bps(annual_premium_cents, STAMPING_FEE_BPS)
-    premium_subtotal_cents = annual_premium_cents + POLICY_FEE_CENTS
+  def self.quote_totals(annual_premium_cents, version: VERSION)
+    policy_fee_cents = ProductConfig.cents("financial.policy_fee", version:)
+    state_tax_bps = ProductConfig.integer("financial.state_tax_bps", version:)
+    stamping_fee_bps = ProductConfig.integer("financial.stamping_fee_bps", version:)
+    state_tax_cents = bps(annual_premium_cents, state_tax_bps)
+    stamping_fee_cents = bps(annual_premium_cents, stamping_fee_bps)
+    premium_subtotal_cents = annual_premium_cents + policy_fee_cents
     total_due_cents = premium_subtotal_cents + state_tax_cents + stamping_fee_cents
 
     {
       annual_premium_cents:,
       premium_subtotal_cents:,
-      policy_fee_cents: POLICY_FEE_CENTS,
+      policy_fee_cents:,
       state_tax_cents:,
       stamping_fee_cents:,
       total_due_cents:,
-      tax_rate_bps: STATE_TAX_BPS,
-      stamping_fee_rate_bps: STAMPING_FEE_BPS,
-      financial_version: VERSION
+      tax_rate_bps: state_tax_bps,
+      stamping_fee_rate_bps: stamping_fee_bps,
+      financial_version: version
     }
   end
 

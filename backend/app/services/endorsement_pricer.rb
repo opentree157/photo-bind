@@ -37,8 +37,13 @@ class EndorsementPricer
     new_state = change_request["state"]
     return 0 if new_state == current_state
 
-    current_factor = RatingEngine::TERRITORY.fetch(current_state, 1.0)
-    new_factor = RatingEngine::TERRITORY.fetch(new_state, 1.25)
+    current_factor = territory_factor(current_state)
+    new_factor = territory_factor(new_state)
     ((policy.quote_option.annual_premium_cents * (new_factor - current_factor)) / current_factor).round
+  end
+
+  def self.territory_factor(state)
+    RatingFactor.find_by(version: RatingEngine::RATING_VERSION, state:, class_code: "PHOTO_GL", factor_type: "territory", band: "default", active: true)&.factor&.to_f ||
+      RatingFactor.find_by!(version: RatingEngine::RATING_VERSION, state: "ALL", class_code: "PHOTO_GL", factor_type: "territory", band: "default", active: true).factor.to_f
   end
 end

@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_05_08_000200) do
+ActiveRecord::Schema[8.1].define(version: 2026_05_08_000300) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -153,6 +153,16 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_08_000200) do
     t.datetime "updated_at", null: false
     t.integer "written_premium_cents", null: false
     t.index ["policy_id"], name: "index_policy_terms_on_policy_id"
+  end
+
+  create_table "product_parameters", force: :cascade do |t|
+    t.boolean "active", default: true, null: false
+    t.datetime "created_at", null: false
+    t.string "key", null: false
+    t.datetime "updated_at", null: false
+    t.decimal "value", precision: 14, scale: 4, null: false
+    t.string "version", null: false
+    t.index ["version", "key"], name: "index_product_parameters_on_version_and_key", unique: true
   end
 
   create_table "quote_options", force: :cascade do |t|

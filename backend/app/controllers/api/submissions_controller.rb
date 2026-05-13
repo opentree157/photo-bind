@@ -3,7 +3,9 @@ module Api
     before_action :authorize_backoffice!, only: %i[index show]
 
     def index
-      render json: Submission.order(created_at: :desc).includes(:business, :risk).as_json(include: %i[business risk])
+      render json: Submission.order(created_at: :desc)
+        .includes(:business, :risk, quotes: :quote_options)
+        .as_json(include: { business: {}, risk: {}, quotes: { include: :quote_options } })
     end
 
     def show

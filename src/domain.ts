@@ -14,7 +14,15 @@ export type SubmissionStatus =
   | "endorsement_pending"
   | "cancelled";
 
-export type StateCode = "MA" | "CT" | "RI" | "NH" | "NY" | "VT";
+export const US_STATES = [
+  "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
+  "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",
+  "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",
+  "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",
+  "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY"
+] as const;
+
+export type StateCode = typeof US_STATES[number];
 
 export type QuoteTier = "Basic" | "Standard" | "Premium";
 
@@ -53,6 +61,7 @@ export interface Submission {
   ruleVersion: string;
   ratingVersion: string;
   selectedQuoteOptionId?: string;
+  quotes?: Quote[];
 }
 
 export interface RatingBreakdown {
@@ -82,7 +91,7 @@ export interface QuoteOption {
 export interface Quote {
   id: string;
   submissionId: string;
-  status: "active" | "referred" | "bound" | "expired";
+  status: "active" | "quoted" | "referred" | "bound" | "expired";
   createdAt: string;
   ratingVersion: string;
   ruleVersion: string;
@@ -187,10 +196,17 @@ export function dollars(value: number) {
 export const underwritingRules: UnderwritingRule[] = [
   {
     code: "UNSUPPORTED_STATE",
-    label: "Unsupported operating state",
+    label: "South Dakota is outside appetite",
     version: "UW-2026.05-v3",
     action: "decline",
-    test: (submission) => !["MA", "CT", "RI", "NH"].includes(submission.business.state)
+    test: (submission) => submission.business.state === "SD"
+  },
+  {
+    code: "STATE_REFERRAL",
+    label: "Wyoming and North Dakota require underwriting review",
+    version: "UW-2026.05-v3",
+    action: "refer",
+    test: (submission) => ["WY", "ND"].includes(submission.business.state)
   },
   {
     code: "PYROTECHNICS",
@@ -235,7 +251,7 @@ const classFactors: Record<Risk["classCode"], number> = {
   "PHOTO-DRONE": 1.35
 };
 
-const territoryFactors: Record<StateCode, number> = {
+const territoryFactors: Partial<Record<StateCode, number>> = {
   MA: 1.12,
   CT: 1.06,
   RI: 1.02,
@@ -255,7 +271,7 @@ export function rateSubmission(submission: Submission, overrides: Partial<Risk> 
   const risk = { ...submission.risk, ...overrides };
   const baseRate = 520;
   const classFactor = classFactors[risk.classCode];
-  const territoryFactor = territoryFactors[submission.business.state];
+  const territoryFactor = territoryFactors[submission.business.state] ?? 1.35;
   const revFactor = revenueFactor(submission.business.annualRevenue);
   const claimsFactor = 1 + Math.min(submission.business.priorClaimsCount, 4) * 0.12;
   const limitFactor = risk.limit === 2_000_000 ? 1.32 : 1.0;

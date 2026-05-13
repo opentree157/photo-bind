@@ -64,8 +64,8 @@ class BindPolicy
         state_tax_cents: option.state_tax_cents,
         stamping_fee_cents: option.stamping_fee_cents,
         total_due_cents: option.total_due_cents,
-        tax_rate_bps: option.respond_to?(:tax_rate_bps) ? option.tax_rate_bps : Financials::STATE_TAX_BPS,
-        stamping_fee_rate_bps: option.respond_to?(:stamping_fee_rate_bps) ? option.stamping_fee_rate_bps : Financials::STAMPING_FEE_BPS,
+        tax_rate_bps: option.respond_to?(:tax_rate_bps) ? option.tax_rate_bps : ProductConfig.integer("financial.state_tax_bps", version: quote.rating_version),
+        stamping_fee_rate_bps: option.respond_to?(:stamping_fee_rate_bps) ? option.stamping_fee_rate_bps : ProductConfig.integer("financial.stamping_fee_bps", version: quote.rating_version),
         financial_version: option.respond_to?(:financial_version) ? option.financial_version : Financials::VERSION
       },
       rating_version: quote.rating_version,

@@ -16,7 +16,8 @@ class UnderwritingEngine
     return rules if rules.any?
 
     [
-      OpenStruct.new(code: "UNSUPPORTED_STATE", action: "decline", description: "State is outside appetite", condition: { "field" => "state", "operator" => "not_in", "value" => %w[MA CT RI NH] }),
+      OpenStruct.new(code: "UNSUPPORTED_STATE", action: "decline", description: "South Dakota is outside appetite", condition: { "field" => "state", "operator" => "==", "value" => "SD" }),
+      OpenStruct.new(code: "STATE_REFERRAL", action: "refer", description: "Wyoming and North Dakota require underwriting review", condition: { "field" => "state", "operator" => "in", "value" => %w[WY ND] }),
       OpenStruct.new(code: "HIGH_REVENUE", action: "refer", description: "Annual revenue is over $2M", condition: { "field" => "annual_revenue_cents", "operator" => ">", "value" => 200_000_000 }),
       OpenStruct.new(code: "PRIOR_CLAIMS", action: "refer", description: "Prior claims require underwriter review", condition: { "field" => "prior_claims_count", "operator" => ">=", "value" => 2 }),
       OpenStruct.new(code: "DRONE_WORK", action: "refer", description: "Drone operations require review", condition: { "field" => "uses_drones", "operator" => "==", "value" => true }),

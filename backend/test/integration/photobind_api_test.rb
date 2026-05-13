@@ -7,6 +7,7 @@ class PhotobindApiTest < ActionDispatch::IntegrationTest
     @agent = User.create!(organization: @organization, agency: @agency, name: "Agent", email: "agent-test@example.test", role: "agent")
     @underwriter = User.create!(organization: @organization, name: "Underwriter", email: "uw-test@example.test", role: "underwriter")
     @admin = User.create!(organization: @organization, name: "Admin", email: "admin-test@example.test", role: "admin")
+    seed_product_parameters
     seed_rules
     seed_factors
   end
@@ -72,6 +73,37 @@ class PhotobindApiTest < ActionDispatch::IntegrationTest
     assert_equal "approved", referral.underwriting_decisions.last.outcome
   end
 
+  test "state appetite refers wyoming and north dakota and only declines south dakota" do
+    post "/api/session", params: { role: "agent", email: @agent.email }, as: :json
+    token = response.parsed_body["token"]
+
+    post "/api/submissions", headers: auth(token), params: submission_payload(prior_claims_count: 0, state: "WY"), as: :json
+    wyoming_id = response.parsed_body["id"]
+    post "/api/submissions/#{wyoming_id}/quote", headers: auth(token), as: :json
+    assert_response :success
+    assert_equal "referred", response.parsed_body["status"]
+    assert_equal ["STATE_REFERRAL"], UnderwritingReferral.last.triggered_rules.map { |rule| rule["code"] }
+
+    post "/api/submissions", headers: auth(token), params: submission_payload(prior_claims_count: 0, state: "ND"), as: :json
+    north_dakota_id = response.parsed_body["id"]
+    post "/api/submissions/#{north_dakota_id}/quote", headers: auth(token), as: :json
+    assert_response :success
+    assert_equal "referred", response.parsed_body["status"]
+    assert_equal ["STATE_REFERRAL"], UnderwritingReferral.last.triggered_rules.map { |rule| rule["code"] }
+
+    post "/api/submissions", headers: auth(token), params: submission_payload(prior_claims_count: 0, state: "SD"), as: :json
+    south_dakota_id = response.parsed_body["id"]
+    post "/api/submissions/#{south_dakota_id}/quote", headers: auth(token), as: :json
+    assert_response :success
+    assert_equal "ineligible", response.parsed_body["status"]
+
+    post "/api/submissions", headers: auth(token), params: submission_payload(prior_claims_count: 0, state: "CA"), as: :json
+    california_id = response.parsed_body["id"]
+    post "/api/submissions/#{california_id}/quote", headers: auth(token), as: :json
+    assert_response :success
+    assert_equal "quoted", response.parsed_body["status"]
+  end
+
   test "admin rating factor drives subsequent rating" do
     post "/api/session", params: { role: "admin", email: @admin.email }, as: :json
     admin_token = response.parsed_body["token"]
@@ -85,6 +117,21 @@ class PhotobindApiTest < ActionDispatch::IntegrationTest
     WorkflowTransition.apply!(submission, to: "submitted", user: @agent)
     quote = RatingEngine.quote!(submission)
     assert_equal 2.0, quote.rating_breakdown["territory_factor"]
+  end
+
+  test "admin product parameter drives subsequent rating" do
+    post "/api/session", params: { role: "admin", email: @admin.email }, as: :json
+    admin_token = response.parsed_body["token"]
+    post "/api/admin/rating-tables",
+      headers: auth(admin_token),
+      params: { product_parameter: { version: RatingEngine::RATING_VERSION, key: "financial.policy_fee", value: 125, active: true } },
+      as: :json
+    assert_response :created
+
+    submission = create_submission(prior_claims_count: 0)
+    WorkflowTransition.apply!(submission, to: "submitted", user: @agent)
+    quote = RatingEngine.quote!(submission)
+    assert_equal 12_500, quote.quote_options.find_by!(tier: "Standard").policy_fee_cents
   end
 
   test "document collection omits binary data and document endpoint returns pdf" do
@@ -188,22 +235,54 @@ class PhotobindApiTest < ActionDispatch::IntegrationTest
     )
   end
 
-  def submission_payload(prior_claims_count:)
+  def submission_payload(prior_claims_count:, state: "MA")
     {
       effective_date: Date.current.next_month.to_s,
       business: { legal_name: "Test Photo", contact_name: "Tess", email: "tess@example.test", business_class: "photographer", years_in_business: 3 },
-      location: { line1: "1 Main", city: "Boston", state: "MA", postal_code: "02108" },
+      location: { line1: "1 Main", city: "Boston", state:, postal_code: "02108" },
       risk: { annual_revenue_cents: 400_000_00, payroll_cents: 100_000_00, prior_claims_count:, uses_drones: false, uses_pyrotechnics: false, event_work_percent: 50, class_code: "PHOTO_GL", requested_limit_cents: 1_000_000_00, requested_deductible_cents: 1_000_00 }
     }
   end
 
   def seed_rules
+    UnderwritingRule.create!(version: "v3", code: "UNSUPPORTED_STATE", action: "decline", description: "South Dakota is outside appetite", condition: { field: "state", operator: "==", value: "SD" })
+    UnderwritingRule.create!(version: "v3", code: "STATE_REFERRAL", action: "refer", description: "Wyoming and North Dakota require underwriting review", condition: { field: "state", operator: "in", value: %w[WY ND] })
     UnderwritingRule.create!(version: "v3", code: "PRIOR_CLAIMS", action: "refer", description: "Prior claims require review", condition: { field: "prior_claims_count", operator: ">=", value: 2 })
+  end
+
+  def seed_product_parameters
+    {
+      "rating.base_rate" => 500,
+      "rating.claims_surcharge_per_claim" => 0.12,
+      "rating.event_work_surcharge" => 0.18,
+      "financial.policy_fee" => 75,
+      "financial.state_tax_bps" => 300,
+      "financial.stamping_fee_bps" => 80,
+      "option.basic.limit" => 500_000,
+      "option.basic.deductible" => 2_500,
+      "option.basic.limit_factor" => 0.88,
+      "option.basic.deductible_factor" => 0.86,
+      "option.standard.limit" => 1_000_000,
+      "option.standard.deductible" => 1_000,
+      "option.standard.limit_factor" => 1.0,
+      "option.standard.deductible_factor" => 1.0,
+      "option.premium.limit" => 2_000_000,
+      "option.premium.deductible" => 500,
+      "option.premium.limit_factor" => 1.28,
+      "option.premium.deductible_factor" => 1.08
+    }.each do |key, value|
+      ProductParameter.create!(version: RatingEngine::RATING_VERSION, key:, value:)
+    end
   end
 
   def seed_factors
     RatingFactor.create!(version: RatingEngine::RATING_VERSION, state: "MA", class_code: "PHOTO_GL", factor_type: "territory", band: "default", factor: 1.1)
     RatingFactor.create!(version: RatingEngine::RATING_VERSION, state: "MA", class_code: "PHOTO_GL", factor_type: "class", band: "default", factor: 1.25)
     RatingFactor.create!(version: RatingEngine::RATING_VERSION, state: "MA", class_code: "PHOTO_GL", factor_type: "revenue", band: "300k_750k", factor: 1.18)
+    RatingFactor.create!(version: RatingEngine::RATING_VERSION, state: "ALL", class_code: "PHOTO_GL", factor_type: "territory", band: "default", factor: 1.35)
+    RatingFactor.create!(version: RatingEngine::RATING_VERSION, state: "ALL", class_code: "PHOTO_GL", factor_type: "class", band: "default", factor: 1.25)
+    %w[lt_100k 100k_300k 300k_750k 750k_1_5m gte_1_5m].zip([0.82, 1.0, 1.18, 1.4, 1.7]).each do |band, factor|
+      RatingFactor.create!(version: RatingEngine::RATING_VERSION, state: "ALL", class_code: "PHOTO_GL", factor_type: "revenue", band:, factor:)
+    end
   end
 end
